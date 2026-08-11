@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Browser-only PDF splitting, manifest editing, and binder rebuilding tool." />
+    <title>PDF Binder Tool</title>
+  </head>
+  <body>
+    <div id="app">
+      <header class="app-header">
+        <div>
+          <p class="eyebrow">LOCAL PDF WORKSPACE</p>
+          <h1>PDF Binder Tool</h1>
+          <p class="subtitle">Split combined PDFs, remove physical divider pages when needed, edit the document manifest, and rebuild binders without uploading PDFs to a server.</p>
+        </div>
+        <div class="privacy-badge">Files stay in this browser session</div>
+      </header>
+
+      <nav class="mode-tabs" aria-label="Tool mode">
+        <button class="mode-tab active" data-mode="split">Split PDF</button>
+        <button class="mode-tab" data-mode="build">Build Binder</button>
+      </nav>
+
+      <main>
+        <section id="split-mode" class="mode-panel active">
+          <div class="toolbar card">
+            <label class="file-button">
+              Open PDF
+              <input id="binder-input" type="file" accept="application/pdf,.pdf" hidden />
+            </label>
+            <button id="detect-tabs" disabled>Detect tab pages</button>
+            <button id="clear-markers" disabled>Reset divisions</button>
+            <label class="inline-check">
+              <input id="preserve-tab-pdfs" type="checkbox" checked />
+              Preserve tab PDFs separately
+            </label>
+            <button id="split-download" class="primary" disabled>Split &amp; download ZIP</button>
+            <span id="split-status" class="status">Choose a PDF to begin.</span>
+          </div>
+
+          <div class="workspace-grid">
+            <aside class="pages-panel card">
+              <div class="panel-heading">
+                <div>
+                  <h2>Pages</h2>
+                  <p>Click a page to preview it. “Split after page” preserves that page; “tab divider” excludes that physical divider sheet.</p>
+                </div>
+              </div>
+              <div id="thumbnail-list" class="thumbnail-list empty-state">No PDF loaded.</div>
+            </aside>
+
+            <section class="preview-panel card">
+              <div class="panel-heading preview-heading">
+                <div>
+                  <h2>Preview</h2>
+                  <p id="preview-label">No page selected.</p>
+                </div>
+                <div class="preview-actions">
+                  <button id="split-after-current" disabled>Split after page</button>
+                  <button id="toggle-current-marker" disabled>Mark as tab divider</button>
+                </div>
+              </div>
+
+              <div id="current-section-editor" class="current-section-editor is-hidden">
+                <div class="section-editor-heading">
+                  <div>
+                    <strong>Current output section</strong>
+                    <span id="current-section-pages"></span>
+                  </div>
+                  <span id="current-section-filename-mode" class="filename-mode"></span>
+                </div>
+                <div class="section-editor-grid">
+                  <label>
+                    Label
+                    <input id="current-section-label" type="text" />
+                  </label>
+                  <label>
+                    Description
+                    <input id="current-section-description" type="text" />
+                  </label>
+                  <label class="wide-field">
+                    Output filename
+                    <input id="current-section-filename" type="text" />
+                  </label>
+                </div>
+              </div>
+
+              <div id="preview-stage" class="preview-stage empty-state">Open a PDF to preview pages.</div>
+            </section>
+          </div>
+
+          <section class="manifest-panel card">
+            <div class="panel-heading manifest-heading">
+              <div>
+                <h2>Document manifest</h2>
+                <p>Review names before export. Auto-generated filenames follow the template until you manually edit a filename.</p>
+              </div>
+              <div class="manifest-actions">
+                <label class="compact-file-button">
+                  Import manifest
+                  <input id="import-split-manifest" type="file" accept="application/json,.json,.xlsx,.xls" hidden />
+                </label>
+                <button id="export-manifest-json" disabled>JSON</button>
+                <button id="export-manifest-csv" disabled>CSV</button>
+                <button id="export-manifest-xlsx" disabled>Excel</button>
+              </div>
+            </div>
+
+            <div class="manifest-editor-toolbar">
+              <label class="template-label">
+                Filename template
+                <input id="filename-template" type="text" value="{order:02} - {description}.pdf" />
+              </label>
+              <button id="apply-filename-template" disabled>Apply template to all</button>
+              <span class="template-help">Available: {order}, {order:02}, {label}, {description}, {startPage}, {endPage}, {original}</span>
+              <span id="manifest-validation-summary" class="validation-summary">No sections yet.</span>
+            </div>
+
+            <div class="table-wrap">
+              <table class="manifest-table">
+                <thead>
+                  <tr>
+                    <th>Status</th>
+                    <th>Order</th>
+                    <th>Boundary</th>
+                    <th>Output pages</th>
+                    <th>Label</th>
+                    <th>Description</th>
+                    <th>Output filename</th>
+                  </tr>
+                </thead>
+                <tbody id="manifest-body">
+                  <tr><td colspan="7" class="empty-cell">No divisions yet.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+        </section>
+
+        <section id="build-mode" class="mode-panel">
+          <div class="toolbar card build-toolbar">
+            <label class="file-button">
+              Add content PDFs
+              <input id="build-files" type="file" accept="application/pdf,.pdf" multiple hidden />
+            </label>
+            <label class="file-button">
+              Add tab PDFs
+              <input id="build-tabs" type="file" accept="application/pdf,.pdf" multiple hidden />
+            </label>
+            <button id="clear-build-tabs" disabled>Clear tab PDFs</button>
+            <label class="file-button secondary-file-button">
+              Import manifest
+              <input id="build-manifest" type="file" accept="application/json,.json,.xlsx,.xls" hidden />
+            </label>
+            <label class="inline-check">
+              <input id="insert-build-tabs" type="checkbox" checked />
+              Insert supplied tabs by position
+            </label>
+            <label class="output-name-label">
+              Output
+              <input id="build-output-name" type="text" value="Rebuilt Binder.pdf" />
+            </label>
+            <button id="build-download" class="primary" disabled>Build &amp; download PDF</button>
+            <span id="build-status" class="status">Add content PDFs in the order you want, or import a manifest.</span>
+          </div>
+
+          <section class="card build-panel">
+            <div class="panel-heading manifest-heading">
+              <div>
+                <h2>Final binder order</h2>
+                <p>Drag content rows to reorder them. Tabs stay positional: TAB 1 remains position 1, TAB 2 remains position 2, and so on.</p>
+              </div>
+              <div class="manifest-actions">
+                <button id="export-build-xlsx" disabled>Export order to Excel</button>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table class="build-table">
+                <thead>
+                  <tr>
+                    <th></th>
+                    <th>Order</th>
+                    <th>Positional tab</th>
+                    <th>Description</th>
+                    <th>Content PDF</th>
+                    <th>Size</th>
+                    <th>Move</th>
+                    <th>Remove</th>
+                  </tr>
+                </thead>
+                <tbody id="build-body">
+                  <tr><td colspan="8" class="empty-cell">No content PDFs loaded.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+        </section>
+      </main>
+    </div>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
