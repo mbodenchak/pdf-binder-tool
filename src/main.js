@@ -1,7 +1,7 @@
 import './styles.css';
 import * as pdfjsLib from 'pdfjs-dist';
 import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
-import { PDFDocument } from 'pdf-lib';
+import { PDFArray, PDFDocument, PDFHexString, PDFName, PDFNull } from 'pdf-lib';
 import JSZip from 'jszip';
 import * as XLSX from 'xlsx';
 
@@ -44,6 +44,7 @@ const els = {
   buildTabs: document.querySelector('#build-tabs'),
   clearBuildTabs: document.querySelector('#clear-build-tabs'),
   insertBuildTabs: document.querySelector('#insert-build-tabs'),
+  createBuildBookmarks: document.querySelector('#create-build-bookmarks'),
   buildManifest: document.querySelector('#build-manifest'),
   buildOutputName: document.querySelector('#build-output-name'),
   buildDownload: document.querySelector('#build-download'),
@@ -131,6 +132,7 @@ els.insertBuildTabs.addEventListener('change', () => {
   renderBuildTable();
   updateBuildStatusSummary();
 });
+els.createBuildBookmarks.addEventListener('change', updateBuildStatusSummary);
 els.buildManifest.addEventListener('change', importBuildManifest);
 els.buildDownload.addEventListener('click', buildAndDownload);
 els.exportBuildXlsx.addEventListener('click', exportBuildXlsx);
@@ -998,12 +1000,64 @@ function makeBuildEntry(file) {
   };
 }
 
-function addBuildTabFiles(files) {
+async function addBuildTabFiles(files) {
   const pdfs = files.filter(isPdfFile);
-  buildState.tabFiles.push(...pdfs);
+  const tabEntries = pdfs.map((file) => ({
+    id: makeId(),
+    file,
+    bookmarkTitle: fallbackBookmarkTitle(file.name),
+    bookmarkSource: 'filename',
+    bookmarkStatus: 'reading',
+  }));
+
+  buildState.tabFiles.push(...tabEntries);
   applyBuildTabOrder();
   renderBuildTable();
   updateBuildStatusSummary();
+
+  await Promise.all(tabEntries.map(readTabBookmarkTitle));
+  applyBuildTabOrder();
+  renderBuildTable();
+  updateBuildStatusSummary();
+}
+
+async function readTabBookmarkTitle(tabEntry) {
+  try {
+    const bytes = new Uint8Array(await tabEntry.file.arrayBuffer());
+    const loadingTask = pdfjsLib.getDocument({ data: bytes });
+    const pdf = await loadingTask.promise;
+    const outline = await pdf.getOutline();
+    const title = firstOutlineTitle(outline);
+
+    if (title) {
+      tabEntry.bookmarkTitle = title;
+      tabEntry.bookmarkSource = 'existing';
+    }
+    tabEntry.bookmarkStatus = 'ready';
+    await pdf.destroy();
+  } catch (error) {
+    console.warn(`Could not read bookmark from ${tabEntry.file.name}; using filename fallback.`, error);
+    tabEntry.bookmarkStatus = 'fallback';
+  }
+}
+
+function firstOutlineTitle(items) {
+  if (!Array.isArray(items)) return '';
+  for (const item of items) {
+    const title = String(item?.title || '').trim();
+    if (title) return title;
+    const nested = firstOutlineTitle(item?.items);
+    if (nested) return nested;
+  }
+  return '';
+}
+
+function fallbackBookmarkTitle(filename) {
+  const title = stripExtension(filename)
+    .replace(/[_]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return title || 'Tab';
 }
 
 async function importBuildManifest(event) {
@@ -1129,9 +1183,9 @@ function applyBuildTabOrder() {
   );
 
   buildState.tabFiles.sort((a, b) => {
-    const aOrder = manifestTabOrder.get(a.name);
-    const bOrder = manifestTabOrder.get(b.name);
-    if (aOrder == null && bOrder == null) return naturalCompare(a.name, b.name);
+    const aOrder = manifestTabOrder.get(a.file.name);
+    const bOrder = manifestTabOrder.get(b.file.name);
+    if (aOrder == null && bOrder == null) return naturalCompare(a.file.name, b.file.name);
     if (aOrder == null) return 1;
     if (bOrder == null) return -1;
     return aOrder - bOrder;
@@ -1146,7 +1200,7 @@ function countManifestMatches() {
 
 function countManifestTabMatches() {
   if (!buildState.manifest?.sections) return 0;
-  const loaded = new Set(buildState.tabFiles.map((file) => file.name));
+  const loaded = new Set(buildState.tabFiles.map((tab) => tab.file.name));
   return buildState.manifest.sections.filter((section) => section.tabFilename && loaded.has(section.tabFilename)).length;
 }
 
@@ -1168,7 +1222,10 @@ function renderBuildTable() {
     const tabCell = !tabsEnabled
       ? '<span class="tab-missing">Not inserted</span>'
       : tabFile
-        ? `<span class="tab-file-name">${escapeHtml(tabFile.name)}</span>`
+        ? `<span class="tab-file-name">${escapeHtml(tabFile.file.name)}</span>
+           <span class="tab-bookmark">${tabFile.bookmarkStatus === 'reading'
+             ? 'Bookmark: checking PDF…'
+             : `Bookmark: ${escapeHtml(tabFile.bookmarkTitle)}${tabFile.bookmarkSource === 'existing' ? ' (from PDF)' : ' (filename fallback)'}`}</span>`
         : '<span class="tab-missing">Missing tab PDF</span>';
 
     const row = document.createElement('tr');
@@ -1254,6 +1311,7 @@ function moveBuildEntry(index, delta) {
 function updateBuildStatusSummary() {
   const contentCount = buildState.entries.length;
   const tabCount = buildState.tabFiles.length;
+  els.createBuildBookmarks.disabled = !els.insertBuildTabs.checked || tabCount === 0;
   if (!contentCount) {
     setBuildStatus(tabCount
       ? `${tabCount} positional tab PDF${tabCount === 1 ? '' : 's'} loaded. Add content PDFs to build the binder.`
@@ -1277,7 +1335,8 @@ function updateBuildStatusSummary() {
 
   const extra = tabCount - contentCount;
   const extraNote = extra ? ` ${extra} extra tab PDF${extra === 1 ? '' : 's'} will not be used.` : '';
-  setBuildStatus(`${contentCount} content PDF${contentCount === 1 ? '' : 's'} will be paired with the first ${contentCount} positional tab PDF${contentCount === 1 ? '' : 's'}.${extraNote}${duplicateNote}`, duplicateNames.length ? 'error' : 'success');
+  const bookmarkNote = els.createBuildBookmarks.checked ? ` ${contentCount} top-level tab bookmark${contentCount === 1 ? '' : 's'} will be created.` : '';
+  setBuildStatus(`${contentCount} content PDF${contentCount === 1 ? '' : 's'} will be paired with the first ${contentCount} positional tab PDF${contentCount === 1 ? '' : 's'}.${bookmarkNote}${extraNote}${duplicateNote}`, duplicateNames.length ? 'error' : 'success');
 }
 
 function findDuplicateNames(names) {
@@ -1293,6 +1352,43 @@ async function appendPdfToOutput(output, file) {
   const source = await PDFDocument.load(await file.arrayBuffer());
   const pages = await output.copyPages(source, source.getPageIndices());
   pages.forEach((page) => output.addPage(page));
+  return pages.length;
+}
+
+function addTopLevelBookmarks(pdfDoc, bookmarks) {
+  if (!bookmarks.length) return;
+
+  const context = pdfDoc.context;
+  const outlinesRef = context.nextRef();
+  const itemRefs = bookmarks.map(() => context.nextRef());
+
+  bookmarks.forEach((bookmark, index) => {
+    const page = pdfDoc.getPage(bookmark.pageIndex);
+    const destination = PDFArray.withContext(context);
+    destination.push(page.ref);
+    destination.push(PDFName.of('XYZ'));
+    destination.push(PDFNull);
+    destination.push(PDFNull);
+    destination.push(PDFNull);
+
+    const item = context.obj({
+      Title: PDFHexString.fromText(bookmark.title),
+      Parent: outlinesRef,
+      Prev: index > 0 ? itemRefs[index - 1] : undefined,
+      Next: index < itemRefs.length - 1 ? itemRefs[index + 1] : undefined,
+      Dest: destination,
+    });
+    context.assign(itemRefs[index], item);
+  });
+
+  const outlines = context.obj({
+    Type: 'Outlines',
+    First: itemRefs[0],
+    Last: itemRefs[itemRefs.length - 1],
+    Count: itemRefs.length,
+  });
+  context.assign(outlinesRef, outlines);
+  pdfDoc.catalog.set(PDFName.of('Outlines'), outlinesRef);
 }
 
 async function buildAndDownload() {
@@ -1305,17 +1401,27 @@ async function buildAndDownload() {
   els.buildDownload.disabled = true;
   try {
     const output = await PDFDocument.create();
+    const bookmarks = [];
     for (let i = 0; i < buildState.entries.length; i += 1) {
       const entry = buildState.entries[i];
       const tabFile = els.insertBuildTabs.checked ? buildState.tabFiles[i] : null;
 
       if (tabFile) {
-        setBuildStatus(`Adding positional tab ${i + 1}: ${tabFile.name}`);
-        await appendPdfToOutput(output, tabFile);
+        const tabPageIndex = output.getPageCount();
+        setBuildStatus(`Adding positional tab ${i + 1}: ${tabFile.file.name}`);
+        await appendPdfToOutput(output, tabFile.file);
+        if (els.createBuildBookmarks.checked) {
+          bookmarks.push({ title: tabFile.bookmarkTitle || `TAB ${i + 1}`, pageIndex: tabPageIndex });
+        }
       }
 
       setBuildStatus(`Adding content ${i + 1} of ${buildState.entries.length}: ${entry.file.name}`);
       await appendPdfToOutput(output, entry.file);
+    }
+
+    if (bookmarks.length) {
+      setBuildStatus(`Creating ${bookmarks.length} tab bookmark${bookmarks.length === 1 ? '' : 's'}…`);
+      addTopLevelBookmarks(output, bookmarks);
     }
 
     setBuildStatus('Saving rebuilt binder…');
@@ -1323,7 +1429,8 @@ async function buildAndDownload() {
     const filename = sanitizePdfFilename(els.buildOutputName.value || 'Rebuilt Binder.pdf');
     downloadBlob(new Blob([bytes], { type: 'application/pdf' }), filename);
     const tabPhrase = els.insertBuildTabs.checked ? ` with ${buildState.entries.length} positional tab PDF${buildState.entries.length === 1 ? '' : 's'}` : '';
-    setBuildStatus(`Built ${filename} from ${buildState.entries.length} content PDF${buildState.entries.length === 1 ? '' : 's'}${tabPhrase}.`, 'success');
+    const bookmarkPhrase = bookmarks.length ? ` and ${bookmarks.length} bookmark${bookmarks.length === 1 ? '' : 's'}` : '';
+    setBuildStatus(`Built ${filename} from ${buildState.entries.length} content PDF${buildState.entries.length === 1 ? '' : 's'}${tabPhrase}${bookmarkPhrase}.`, 'success');
   } catch (error) {
     console.error(error);
     setBuildStatus(`Could not build the binder: ${friendlyError(error)}`, 'error');
@@ -1339,13 +1446,14 @@ function exportBuildXlsx() {
   const rows = buildState.entries.map((entry, index) => ({
     Order: index + 1,
     'Tab Position': els.insertBuildTabs.checked ? index + 1 : '',
-    'Tab Filename': els.insertBuildTabs.checked ? (buildState.tabFiles[index]?.name || '') : '',
+    'Tab Filename': els.insertBuildTabs.checked ? (buildState.tabFiles[index]?.file.name || '') : '',
+    'Bookmark Title': els.insertBuildTabs.checked && els.createBuildBookmarks.checked ? (buildState.tabFiles[index]?.bookmarkTitle || '') : '',
     Description: entry.description,
     Filename: entry.file.name,
     'File Size': formatBytes(entry.file.size),
   }));
   const sheet = XLSX.utils.json_to_sheet(rows);
-  sheet['!cols'] = [{ wch: 8 }, { wch: 14 }, { wch: 26 }, { wch: 44 }, { wch: 50 }, { wch: 14 }];
+  sheet['!cols'] = [{ wch: 8 }, { wch: 14 }, { wch: 26 }, { wch: 28 }, { wch: 44 }, { wch: 50 }, { wch: 14 }];
   XLSX.utils.book_append_sheet(workbook, sheet, 'Manifest');
 
   const configSheet = XLSX.utils.aoa_to_sheet([
@@ -1353,6 +1461,7 @@ function exportBuildXlsx() {
     ['Output filename', els.buildOutputName.value || 'Rebuilt Binder.pdf'],
     ['Tab semantics', 'position'],
     ['Tabs inserted', els.insertBuildTabs.checked ? 'Yes' : 'No'],
+    ['Tab bookmarks created', els.insertBuildTabs.checked && els.createBuildBookmarks.checked ? 'Yes' : 'No'],
   ]);
   configSheet['!cols'] = [{ wch: 22 }, { wch: 70 }];
   XLSX.utils.book_append_sheet(workbook, configSheet, 'Binder Settings');

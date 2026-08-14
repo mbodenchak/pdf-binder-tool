@@ -109,7 +109,8 @@ td input { width: 100%; min-width: 130px; border: 1px solid #ccd4df; border-radi
 .order-buttons { display: flex; gap: 5px; }
 .order-buttons button, .remove-file { border: 1px solid #cad2dd; background: #fff; border-radius: 7px; min-width: 32px; height: 31px; }
 .remove-file { color: #9c3b3b; }
-.tab-file-name { font-weight: 700; color: #2f5b43; }
+.tab-file-name { display: block; font-weight: 700; color: #2f5b43; }
+.tab-bookmark { display: block; margin-top: 3px; color: #687385; font-size: .76rem; line-height: 1.25; }
 .tab-missing { color: #9a5151; font-style: italic; }
 .drag-handle { cursor: grab; color: #7b8491; font-size: 1.1rem; user-select: none; }
 .drag-handle:active { cursor: grabbing; }

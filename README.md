@@ -1,4 +1,4 @@
-# PDF Binder Tool — browser-only MVP v0.5
+# PDF Binder Tool — browser-only MVP v0.6
 
 A client-side PDF workspace for splitting combined PDFs, extracting physical tab divider pages, editing a document manifest, and rebuilding binders with positional tabs.
 
@@ -26,7 +26,7 @@ Tabbed-binder behavior intentionally omits unmarked front matter before the firs
 
 ### Manifest editor
 
-Version 0.5 adds a more complete editor layer:
+Version 0.5 added a more complete editor layer:
 
 - Edit Label, Description, and Output Filename.
 - The preview pane shows the manifest fields for the currently selected output section.
@@ -66,6 +66,19 @@ The workbook includes a `Manifest` sheet and an `Instructions` sheet.
 8. Build and download the merged binder PDF.
 
 If positional tab insertion is enabled, the app requires at least as many tab PDFs as content PDFs. Extra tab PDFs are allowed and ignored.
+
+### Tab bookmarks (v0.6)
+
+When supplied positional tabs are loaded, the app uses PDF.js to inspect each tab PDF for an existing document-outline/bookmark title. The Build Binder table shows the title it found.
+
+- If an existing bookmark title is readable, that title is reused.
+- If the tab PDF has no readable bookmark, the filename without `.pdf` is used as the fallback title.
+- **Create bookmarks for positional tabs** is enabled by default when tab insertion is active.
+- On rebuild, the app creates a fresh top-level bookmark for each inserted positional tab, pointing to the exact tab page in the newly merged binder.
+- The original bookmark object/destination is not copied, because its page reference belongs to the source PDF; only the useful title is reused.
+- The final-order Excel export includes a `Bookmark Title` column and records whether tab bookmarks were enabled.
+
+This bookmark creation uses pdf-lib's low-level PDF outline objects because pdf-lib does not expose a high-level bookmark API.
 
 ## Libraries
 
