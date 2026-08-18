@@ -1,6 +1,6 @@
-# PDF Binder Tool — browser-only MVP v0.6
+# PDF Binder Tool — browser-only MVP v0.7.1
 
-A client-side PDF workspace for splitting combined PDFs, extracting physical tab divider pages, editing a document manifest, and rebuilding binders with positional tabs.
+A client-side PDF workspace for splitting combined PDFs, extracting physical tab divider pages, editing a document manifest, rebuilding binders with positional tabs, and adding clickable links from a supplied index PDF to the final document contents.
 
 The intended deployment is a static website. Users do not need Python, Node, or any desktop installation. The PDF files selected by the user are read and modified in browser memory; this project does not include a server-side upload endpoint.
 
@@ -80,6 +80,20 @@ When supplied positional tabs are loaded, the app uses PDF.js to inspect each ta
 
 This bookmark creation uses pdf-lib's low-level PDF outline objects because pdf-lib does not expose a high-level bookmark API.
 
+### Supplied index PDF + internal links (v0.7.1)
+
+The Build Binder screen can now accept a separate index PDF that is inserted at the very front of the final binder. The intended index layout is the office's regular three-column Word/PDF table: numbered row, Description, and Date.
+
+- PDF.js extracts positioned text from every index page and looks for numbered table rows.
+- If the supplied index already contains link annotations, their rectangles are reused when they line up with detected rows; otherwise the app estimates the Description-cell rectangle from the table text/column positions.
+- The mapping is positional: index row 1 -> content PDF at binder position 1, row 2 -> position 2, etc.
+- The link destination is the **first page of the content PDF**, not the green positional tab immediately before it.
+- Any existing Link annotations on the copied index pages are removed before new links are written. This avoids carrying stale destinations from an older binder into the rebuilt binder.
+- For this first version, linked-index creation requires exactly one detected row numbered 1 through N for each of the N loaded content PDFs. If detection/counts do not match, Build is disabled until index linking is turned off or the inputs are corrected.
+- Multi-page indexes are supported as long as the numbered rows can be extracted as text. Scanned/image-only index pages are not yet supported because this version does not include OCR.
+
+The Index & Links table previews the detected Description/Date text and shows which current binder position each index row will target. Reordering content PDFs updates those destinations automatically.
+
 ## Libraries
 
 - PDF.js — browser PDF rendering and text extraction
@@ -118,7 +132,14 @@ Each section records its source-page range, boundary type, label, description, f
 
 ## Suggested next increments
 
+- Manual correction tools for index-row/link rectangles when automatic table detection is imperfect.
 - Automatic index-page generation from the final binder order and calculated pagination.
 - Optional front-matter preservation as a named component rather than relying on a leading normal cut.
 - Page-count calculation for loaded build PDFs so the final-order view can preview final binder pagination before assembly.
 - Optional saved tab-library handling using the browser File System Access API where supported, while retaining download-based fallback behavior.
+
+
+## v0.7.1 fix
+
+- Updated PDF.js cleanup to call `PDFDocumentLoadingTask.destroy()` rather than `PDFDocumentProxy.destroy()`.
+- Cleanup failures are now isolated from index/bookmark analysis, so a cleanup API mismatch cannot falsely report that index detection failed.

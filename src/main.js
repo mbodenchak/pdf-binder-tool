@@ -43,6 +43,11 @@ const els = {
   buildFiles: document.querySelector('#build-files'),
   buildTabs: document.querySelector('#build-tabs'),
   clearBuildTabs: document.querySelector('#clear-build-tabs'),
+  buildIndex: document.querySelector('#build-index'),
+  clearBuildIndex: document.querySelector('#clear-build-index'),
+  createIndexLinks: document.querySelector('#create-index-links'),
+  indexDetectionSummary: document.querySelector('#index-detection-summary'),
+  indexLinkBody: document.querySelector('#index-link-body'),
   insertBuildTabs: document.querySelector('#insert-build-tabs'),
   createBuildBookmarks: document.querySelector('#create-build-bookmarks'),
   buildManifest: document.querySelector('#build-manifest'),
@@ -71,6 +76,9 @@ const buildState = {
   tabFiles: [],
   manifest: null,
   draggedEntryId: null,
+  indexFile: null,
+  indexInfo: null,
+  indexLoading: false,
 };
 
 els.modeTabs.forEach((tab) => {
@@ -128,11 +136,29 @@ els.clearBuildTabs.addEventListener('click', () => {
   renderBuildTable();
   updateBuildStatusSummary();
 });
+els.buildIndex.addEventListener('change', async (event) => {
+  const [file] = event.target.files;
+  if (file) await loadBuildIndex(file);
+  event.target.value = '';
+});
+els.clearBuildIndex.addEventListener('click', () => {
+  buildState.indexFile = null;
+  buildState.indexInfo = null;
+  buildState.indexLoading = false;
+  renderIndexPanel();
+  renderBuildTable();
+  updateBuildStatusSummary();
+});
 els.insertBuildTabs.addEventListener('change', () => {
   renderBuildTable();
   updateBuildStatusSummary();
 });
 els.createBuildBookmarks.addEventListener('change', updateBuildStatusSummary);
+els.createIndexLinks.addEventListener('change', () => {
+  renderIndexPanel();
+  renderBuildTable();
+  updateBuildStatusSummary();
+});
 els.buildManifest.addEventListener('change', importBuildManifest);
 els.buildDownload.addEventListener('click', buildAndDownload);
 els.exportBuildXlsx.addEventListener('click', exportBuildXlsx);
@@ -1022,9 +1048,10 @@ async function addBuildTabFiles(files) {
 }
 
 async function readTabBookmarkTitle(tabEntry) {
+  let loadingTask = null;
   try {
     const bytes = new Uint8Array(await tabEntry.file.arrayBuffer());
-    const loadingTask = pdfjsLib.getDocument({ data: bytes });
+    loadingTask = pdfjsLib.getDocument({ data: bytes });
     const pdf = await loadingTask.promise;
     const outline = await pdf.getOutline();
     const title = firstOutlineTitle(outline);
@@ -1034,10 +1061,17 @@ async function readTabBookmarkTitle(tabEntry) {
       tabEntry.bookmarkSource = 'existing';
     }
     tabEntry.bookmarkStatus = 'ready';
-    await pdf.destroy();
   } catch (error) {
     console.warn(`Could not read bookmark from ${tabEntry.file.name}; using filename fallback.`, error);
     tabEntry.bookmarkStatus = 'fallback';
+  } finally {
+    if (loadingTask) {
+      try {
+        await loadingTask.destroy();
+      } catch (cleanupError) {
+        console.warn(`Could not fully release PDF.js resources for ${tabEntry.file.name}.`, cleanupError);
+      }
+    }
   }
 }
 
@@ -1058,6 +1092,328 @@ function fallbackBookmarkTitle(filename) {
     .replace(/\s+/g, ' ')
     .trim();
   return title || 'Tab';
+}
+
+async function loadBuildIndex(file) {
+  if (!isPdfFile(file)) {
+    setBuildStatus('The index must be a PDF file.', 'error');
+    return;
+  }
+
+  buildState.indexFile = file;
+  buildState.indexInfo = null;
+  buildState.indexLoading = true;
+  renderIndexPanel();
+  renderBuildTable();
+  updateBuildStatusSummary();
+
+  let loadingTask = null;
+  try {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    loadingTask = pdfjsLib.getDocument({ data: bytes });
+    const pdf = await loadingTask.promise;
+    const rows = [];
+    let existingLinkRectsUsed = 0;
+
+    for (let pageIndex = 0; pageIndex < pdf.numPages; pageIndex += 1) {
+      const page = await pdf.getPage(pageIndex + 1);
+      const pageRows = await detectIndexRowsOnPage(page, pageIndex);
+      existingLinkRectsUsed += pageRows.filter((row) => row.rectSource === 'existing-link').length;
+      rows.push(...pageRows);
+    }
+
+    rows.sort((a, b) => a.number - b.number || a.pageIndex - b.pageIndex || b.rect[3] - a.rect[3]);
+    buildState.indexInfo = {
+      pageCount: pdf.numPages,
+      rows,
+      existingLinkRectsUsed,
+    };
+  } catch (error) {
+    console.error(`Could not analyze index ${file.name}.`, error);
+    buildState.indexInfo = {
+      pageCount: 0,
+      rows: [],
+      existingLinkRectsUsed: 0,
+      error: friendlyError(error),
+    };
+  } finally {
+    if (loadingTask) {
+      try {
+        await loadingTask.destroy();
+      } catch (cleanupError) {
+        console.warn(`Could not fully release PDF.js resources for ${file.name}.`, cleanupError);
+      }
+    }
+    buildState.indexLoading = false;
+    renderIndexPanel();
+    renderBuildTable();
+    updateBuildStatusSummary();
+  }
+}
+
+async function detectIndexRowsOnPage(page, pageIndex) {
+  const textContent = await page.getTextContent();
+  const items = textContent.items
+    .map(normalizeIndexTextItem)
+    .filter(Boolean);
+
+  const pageView = page.view || [0, 0, 612, 792];
+  const pageX0 = Number(pageView[0]) || 0;
+  const pageY0 = Number(pageView[1]) || 0;
+  const pageX1 = Number(pageView[2]) || 612;
+  const pageY1 = Number(pageView[3]) || 792;
+  const pageWidth = Math.max(1, pageX1 - pageX0);
+
+  const descriptionHeader = items.find((item) => normalizeIndexText(item.str) === 'description');
+  const dateHeader = items.find((item) => normalizeIndexText(item.str) === 'date');
+  const noHeader = items.find((item) => ['no', 'no.'].includes(normalizeIndexText(item.str)));
+  const headerY = descriptionHeader?.y ?? noHeader?.y ?? dateHeader?.y ?? null;
+
+  let numberItems = items
+    .map((item) => ({ item, number: parseIndexRowNumber(item.str) }))
+    .filter(({ item, number }) => Number.isInteger(number)
+      && number > 0
+      && number < 1000
+      && item.x < pageX0 + pageWidth * 0.24
+      && (headerY == null || item.y < headerY - 2))
+    .sort((a, b) => b.item.y - a.item.y || a.item.x - b.item.x);
+
+  // Keep only one visible number marker per row number/page location.
+  numberItems = numberItems.filter((candidate, index, list) => !list.slice(0, index).some((prior) => (
+    prior.number === candidate.number && Math.abs(prior.item.y - candidate.item.y) < 4
+  )));
+
+  if (!numberItems.length) return [];
+
+  let existingLinks = [];
+  try {
+    const annotations = await page.getAnnotations({ intent: 'any' });
+    existingLinks = annotations
+      .filter((annotation) => annotation?.subtype === 'Link' && Array.isArray(annotation.rect) && annotation.rect.length === 4)
+      .map((annotation) => ({ rect: normalizePdfRect(annotation.rect) }))
+      .filter((annotation) => annotation.rect);
+  } catch (error) {
+    console.warn(`Could not inspect existing index links on page ${pageIndex + 1}.`, error);
+  }
+
+  const dateLikeItems = items.filter((item) => looksLikeIndexDate(item.str) && item.x > pageX0 + pageWidth * 0.62);
+  const dateLeft = dateLikeItems.length
+    ? Math.min(...dateLikeItems.map((item) => item.x))
+    : dateHeader
+      ? dateHeader.x - pageWidth * 0.025
+      : pageX0 + pageWidth * 0.79;
+
+  const rows = [];
+  numberItems.forEach((candidate, index) => {
+    const currentY = candidate.item.y;
+    const previousY = index > 0 ? numberItems[index - 1].item.y : null;
+    const nextY = index < numberItems.length - 1 ? numberItems[index + 1].item.y : null;
+
+    let upper = previousY != null
+      ? (previousY + currentY) / 2
+      : headerY != null
+        ? (headerY + currentY) / 2
+        : currentY + Math.max(candidate.item.height * 1.4, 12);
+    let lower = nextY != null
+      ? (currentY + nextY) / 2
+      : currentY - Math.max(previousY != null ? (previousY - currentY) / 2 : 12, candidate.item.height * 1.4, 12);
+
+    upper = Math.min(pageY1, upper);
+    lower = Math.max(pageY0, lower);
+
+    const rowItems = items.filter((item) => item.y <= upper + 2 && item.y >= lower - 2);
+    const descriptionItems = rowItems.filter((item) => (
+      item.x > candidate.item.x + Math.max(candidate.item.width, 8) + 8
+      && item.x < dateLeft - 4
+      && parseIndexRowNumber(item.str) == null
+    ));
+    const dateItems = rowItems.filter((item) => item.x >= dateLeft - 4 && item.x <= pageX1);
+
+    const description = joinIndexTextItems(descriptionItems);
+    const date = joinIndexTextItems(dateItems);
+    if (!description) return;
+
+    const descriptionLeft = Math.max(
+      pageX0,
+      descriptionItems.length ? Math.min(...descriptionItems.map((item) => item.x)) - 6 : candidate.item.x + 24,
+    );
+    const descriptionRight = Math.min(pageX1, Math.max(descriptionLeft + 20, dateLeft - 10));
+    let rect = normalizePdfRect([descriptionLeft, lower + 1, descriptionRight, upper - 1]);
+    let rectSource = 'text-detection';
+
+    const linkMatch = existingLinks
+      .map((link) => ({
+        link,
+        distance: Math.abs(((link.rect[1] + link.rect[3]) / 2) - currentY),
+        overlaps: link.rect[3] >= lower && link.rect[1] <= upper,
+      }))
+      .filter((match) => match.overlaps)
+      .sort((a, b) => a.distance - b.distance)[0];
+
+    if (linkMatch?.link?.rect) {
+      rect = linkMatch.link.rect;
+      rectSource = 'existing-link';
+    }
+
+    if (!rect) return;
+    rows.push({
+      number: candidate.number,
+      pageIndex,
+      description,
+      date,
+      rect,
+      rectSource,
+    });
+  });
+
+  return rows;
+}
+
+function normalizeIndexTextItem(item) {
+  const str = String(item?.str || '').trim();
+  const transform = item?.transform;
+  if (!str || !Array.isArray(transform) || transform.length < 6) return null;
+  const x = Number(transform[4]);
+  const y = Number(transform[5]);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  const width = Number.isFinite(Number(item.width)) ? Math.abs(Number(item.width)) : 0;
+  const heightCandidates = [
+    Number(item.height),
+    Math.hypot(Number(transform[0]) || 0, Number(transform[1]) || 0),
+    Math.hypot(Number(transform[2]) || 0, Number(transform[3]) || 0),
+  ].filter((value) => Number.isFinite(value) && value > 0);
+  const height = heightCandidates.length ? Math.max(...heightCandidates) : 10;
+  return { str, x, y, width, height };
+}
+
+function parseIndexRowNumber(value) {
+  const match = String(value || '').trim().match(/^(\d{1,3})\s*[.)]?$/);
+  if (!match) return null;
+  return Number(match[1]);
+}
+
+function looksLikeIndexDate(value) {
+  const text = String(value || '').trim();
+  return /^\d{1,2}\/\d{1,2}\/\d{2,4}$/.test(text)
+    || /^\d{4}\s*[-–]\s*\d{4}$/.test(text)
+    || /^\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4}$/.test(text);
+}
+
+function normalizeIndexText(value) {
+  return String(value || '').trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+function joinIndexTextItems(items) {
+  if (!items.length) return '';
+  const ordered = [...items].sort((a, b) => {
+    if (Math.abs(a.y - b.y) > 3) return b.y - a.y;
+    return a.x - b.x;
+  });
+  return ordered.map((item) => item.str).join(' ').replace(/\s+/g, ' ').trim();
+}
+
+function normalizePdfRect(rect) {
+  if (!Array.isArray(rect) || rect.length !== 4) return null;
+  const values = rect.map(Number);
+  if (values.some((value) => !Number.isFinite(value))) return null;
+  return [
+    Math.min(values[0], values[2]),
+    Math.min(values[1], values[3]),
+    Math.max(values[0], values[2]),
+    Math.max(values[1], values[3]),
+  ];
+}
+
+function getIndexLinkValidation() {
+  if (!buildState.indexFile || !els.createIndexLinks.checked) return { ok: true, message: '' };
+  if (buildState.indexLoading) return { ok: false, message: 'Index analysis is still running.' };
+  if (buildState.indexInfo?.error) return { ok: false, message: `Could not analyze the index: ${buildState.indexInfo.error}` };
+
+  const rows = buildState.indexInfo?.rows || [];
+  const contentCount = buildState.entries.length;
+  if (!rows.length) return { ok: false, message: 'No numbered index rows were detected. Turn off index linking to build without links.' };
+  if (!contentCount) return { ok: false, message: 'Add content PDFs so the detected index rows have destinations.' };
+
+  const counts = new Map();
+  rows.forEach((row) => counts.set(row.number, (counts.get(row.number) || 0) + 1));
+  const duplicates = [...counts.entries()].filter(([, count]) => count > 1).map(([number]) => number);
+  if (duplicates.length) {
+    return { ok: false, message: `Duplicate index row number${duplicates.length === 1 ? '' : 's'} detected: ${duplicates.join(', ')}.` };
+  }
+
+  const missing = [];
+  for (let number = 1; number <= contentCount; number += 1) {
+    if (!counts.has(number)) missing.push(number);
+  }
+  const extra = rows.map((row) => row.number).filter((number) => number > contentCount);
+  if (missing.length || extra.length || rows.length !== contentCount) {
+    const details = [];
+    if (missing.length) details.push(`missing row${missing.length === 1 ? '' : 's'} ${missing.join(', ')}`);
+    if (extra.length) details.push(`row${extra.length === 1 ? '' : 's'} beyond the loaded content count: ${extra.join(', ')}`);
+    if (!details.length) details.push(`${rows.length} rows detected for ${contentCount} content PDFs`);
+    return {
+      ok: false,
+      message: `Index/content mismatch (${details.join('; ')}). For this first version, linked index rows must be numbered 1 through ${contentCount}.`,
+    };
+  }
+
+  return { ok: true, message: '' };
+}
+
+function renderIndexPanel() {
+  els.clearBuildIndex.disabled = !buildState.indexFile;
+  els.createIndexLinks.disabled = !buildState.indexFile || buildState.indexLoading || !buildState.indexInfo?.rows?.length;
+
+  if (!buildState.indexFile) {
+    els.indexDetectionSummary.textContent = 'No index PDF loaded.';
+    els.indexDetectionSummary.className = 'index-detection-summary';
+    els.indexLinkBody.innerHTML = '<tr><td colspan="5" class="empty-cell">Add an index PDF to detect its numbered rows.</td></tr>';
+    return;
+  }
+
+  if (buildState.indexLoading) {
+    els.indexDetectionSummary.textContent = `Analyzing ${buildState.indexFile.name}…`;
+    els.indexDetectionSummary.className = 'index-detection-summary';
+    els.indexLinkBody.innerHTML = '<tr><td colspan="5" class="empty-cell">Detecting numbered index rows and Description cells…</td></tr>';
+    return;
+  }
+
+  if (buildState.indexInfo?.error) {
+    els.indexDetectionSummary.textContent = `Could not analyze ${buildState.indexFile.name}.`;
+    els.indexDetectionSummary.className = 'index-detection-summary error';
+    els.indexLinkBody.innerHTML = `<tr><td colspan="5" class="empty-cell">${escapeHtml(buildState.indexInfo.error)}</td></tr>`;
+    return;
+  }
+
+  const info = buildState.indexInfo || { rows: [], pageCount: 0, existingLinkRectsUsed: 0 };
+  const validation = getIndexLinkValidation();
+  const reusedNote = info.existingLinkRectsUsed
+    ? ` ${info.existingLinkRectsUsed} existing link rectangle${info.existingLinkRectsUsed === 1 ? '' : 's'} reused for placement.`
+    : '';
+  els.indexDetectionSummary.textContent = `${buildState.indexFile.name} — ${info.pageCount} page${info.pageCount === 1 ? '' : 's'}, ${info.rows.length} numbered row${info.rows.length === 1 ? '' : 's'} detected.${reusedNote}`;
+  els.indexDetectionSummary.className = `index-detection-summary${validation.ok || !els.createIndexLinks.checked ? ' success' : ' error'}`;
+
+  if (!info.rows.length) {
+    els.indexLinkBody.innerHTML = '<tr><td colspan="5" class="empty-cell">No numbered Description rows detected.</td></tr>';
+    return;
+  }
+
+  els.indexLinkBody.innerHTML = '';
+  info.rows.forEach((row) => {
+    const entry = buildState.entries[row.number - 1];
+    const destination = entry
+      ? `Position ${row.number} — ${entry.description || entry.file.name}`
+      : `No content PDF at position ${row.number}`;
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${row.number}</td>
+      <td>${row.pageIndex + 1}</td>
+      <td>${escapeHtml(row.description)}</td>
+      <td>${escapeHtml(row.date || '')}</td>
+      <td class="${entry ? 'index-destination' : 'index-destination missing'}">${escapeHtml(destination)}</td>
+    `;
+    els.indexLinkBody.append(tr);
+  });
 }
 
 async function importBuildManifest(event) {
@@ -1205,11 +1561,13 @@ function countManifestTabMatches() {
 }
 
 function renderBuildTable() {
+  renderIndexPanel();
   els.clearBuildTabs.disabled = buildState.tabFiles.length === 0;
   els.exportBuildXlsx.disabled = buildState.entries.length === 0;
   const tabsEnabled = els.insertBuildTabs.checked;
   const hasEnoughTabs = !tabsEnabled || buildState.tabFiles.length >= buildState.entries.length;
-  els.buildDownload.disabled = buildState.entries.length === 0 || !hasEnoughTabs;
+  const indexValidation = getIndexLinkValidation();
+  els.buildDownload.disabled = buildState.entries.length === 0 || !hasEnoughTabs || !indexValidation.ok;
 
   if (!buildState.entries.length) {
     els.buildBody.innerHTML = '<tr><td colspan="8" class="empty-cell">No content PDFs loaded.</td></tr>';
@@ -1321,22 +1679,32 @@ function updateBuildStatusSummary() {
 
   const duplicateNames = findDuplicateNames(buildState.entries.map((entry) => entry.file.name));
   const duplicateNote = duplicateNames.length ? ` Warning: duplicate content filename${duplicateNames.length === 1 ? '' : 's'} (${duplicateNames.join(', ')}) can make manifest matching ambiguous.` : '';
+  const indexValidation = getIndexLinkValidation();
+  if (!indexValidation.ok) {
+    setBuildStatus(indexValidation.message, 'error');
+    return;
+  }
+  const indexNote = buildState.indexFile
+    ? els.createIndexLinks.checked
+      ? ` The ${buildState.indexInfo?.pageCount || 0}-page index will be inserted first with ${buildState.indexInfo?.rows?.length || 0} Description link${buildState.indexInfo?.rows?.length === 1 ? '' : 's'}.`
+      : ` The ${buildState.indexInfo?.pageCount || 0}-page index will be inserted first without creating new links.`
+    : '';
 
   if (!els.insertBuildTabs.checked) {
-    setBuildStatus(`${contentCount} content PDF${contentCount === 1 ? '' : 's'} loaded. Positional tab insertion is off.${duplicateNote}`, duplicateNames.length ? 'error' : '');
+    setBuildStatus(`${contentCount} content PDF${contentCount === 1 ? '' : 's'} loaded. Positional tab insertion is off.${indexNote}${duplicateNote}`, duplicateNames.length ? 'error' : '');
     return;
   }
 
   if (tabCount < contentCount) {
     const missing = contentCount - tabCount;
-    setBuildStatus(`${contentCount} content PDF${contentCount === 1 ? '' : 's'} and ${tabCount} tab PDF${tabCount === 1 ? '' : 's'} loaded. Add ${missing} more tab PDF${missing === 1 ? '' : 's'} or turn off tab insertion.${duplicateNote}`, 'error');
+    setBuildStatus(`${contentCount} content PDF${contentCount === 1 ? '' : 's'} and ${tabCount} tab PDF${tabCount === 1 ? '' : 's'} loaded. Add ${missing} more tab PDF${missing === 1 ? '' : 's'} or turn off tab insertion.${indexNote}${duplicateNote}`, 'error');
     return;
   }
 
   const extra = tabCount - contentCount;
   const extraNote = extra ? ` ${extra} extra tab PDF${extra === 1 ? '' : 's'} will not be used.` : '';
   const bookmarkNote = els.createBuildBookmarks.checked ? ` ${contentCount} top-level tab bookmark${contentCount === 1 ? '' : 's'} will be created.` : '';
-  setBuildStatus(`${contentCount} content PDF${contentCount === 1 ? '' : 's'} will be paired with the first ${contentCount} positional tab PDF${contentCount === 1 ? '' : 's'}.${bookmarkNote}${extraNote}${duplicateNote}`, duplicateNames.length ? 'error' : 'success');
+  setBuildStatus(`${contentCount} content PDF${contentCount === 1 ? '' : 's'} will be paired with the first ${contentCount} positional tab PDF${contentCount === 1 ? '' : 's'}.${bookmarkNote}${indexNote}${extraNote}${duplicateNote}`, duplicateNames.length ? 'error' : 'success');
 }
 
 function findDuplicateNames(names) {
@@ -1353,6 +1721,75 @@ async function appendPdfToOutput(output, file) {
   const pages = await output.copyPages(source, source.getPageIndices());
   pages.forEach((page) => output.addPage(page));
   return pages.length;
+}
+
+async function appendIndexPdfToOutput(output, file) {
+  const source = await PDFDocument.load(await file.arrayBuffer());
+  const pages = await output.copyPages(source, source.getPageIndices());
+  let removedLinks = 0;
+  pages.forEach((page) => {
+    output.addPage(page);
+    removedLinks += removeLinkAnnotations(output, page);
+  });
+  return { pageCount: pages.length, removedLinks };
+}
+
+function removeLinkAnnotations(pdfDoc, page) {
+  const annotsName = PDFName.of('Annots');
+  const annots = page.node.lookupMaybe(annotsName, PDFArray);
+  if (!annots) return 0;
+
+  const kept = PDFArray.withContext(pdfDoc.context);
+  let removed = 0;
+  for (let index = 0; index < annots.size(); index += 1) {
+    const entry = annots.get(index);
+    let annotation = null;
+    try {
+      annotation = pdfDoc.context.lookup(entry);
+    } catch {
+      annotation = null;
+    }
+    const subtype = annotation?.get?.(PDFName.of('Subtype'));
+    if (String(subtype) === '/Link') {
+      removed += 1;
+    } else {
+      kept.push(entry);
+    }
+  }
+  page.node.set(annotsName, kept);
+  return removed;
+}
+
+function addInternalLinkAnnotation(pdfDoc, sourcePage, rect, targetPageIndex) {
+  const normalizedRect = normalizePdfRect(rect);
+  if (!normalizedRect) throw new Error('Invalid index link rectangle.');
+  const targetPage = pdfDoc.getPage(targetPageIndex);
+  if (!targetPage) throw new Error(`Invalid index link destination page ${targetPageIndex + 1}.`);
+
+  const context = pdfDoc.context;
+  const destination = PDFArray.withContext(context);
+  destination.push(targetPage.ref);
+  destination.push(PDFName.of('XYZ'));
+  destination.push(PDFNull);
+  destination.push(PDFNull);
+  destination.push(PDFNull);
+
+  const link = context.obj({
+    Type: 'Annot',
+    Subtype: 'Link',
+    Rect: normalizedRect,
+    Border: [0, 0, 0],
+    H: 'I',
+    Dest: destination,
+  });
+  const linkRef = context.register(link);
+  const annotsName = PDFName.of('Annots');
+  let annots = sourcePage.node.lookupMaybe(annotsName, PDFArray);
+  if (!annots) {
+    annots = PDFArray.withContext(context);
+    sourcePage.node.set(annotsName, annots);
+  }
+  annots.push(linkRef);
 }
 
 function addTopLevelBookmarks(pdfDoc, bookmarks) {
@@ -1397,11 +1834,30 @@ async function buildAndDownload() {
     updateBuildStatusSummary();
     return;
   }
+  const indexValidation = getIndexLinkValidation();
+  if (!indexValidation.ok) {
+    updateBuildStatusSummary();
+    return;
+  }
 
   els.buildDownload.disabled = true;
   try {
     const output = await PDFDocument.create();
     const bookmarks = [];
+    const contentPageTargets = [];
+    let indexPageStart = null;
+    let indexPageCount = 0;
+    let indexLinksCreated = 0;
+    let oldIndexLinksRemoved = 0;
+
+    if (buildState.indexFile) {
+      indexPageStart = output.getPageCount();
+      setBuildStatus(`Adding index: ${buildState.indexFile.name}`);
+      const indexResult = await appendIndexPdfToOutput(output, buildState.indexFile);
+      indexPageCount = indexResult.pageCount;
+      oldIndexLinksRemoved = indexResult.removedLinks;
+    }
+
     for (let i = 0; i < buildState.entries.length; i += 1) {
       const entry = buildState.entries[i];
       const tabFile = els.insertBuildTabs.checked ? buildState.tabFiles[i] : null;
@@ -1415,8 +1871,24 @@ async function buildAndDownload() {
         }
       }
 
+      const contentPageIndex = output.getPageCount();
+      contentPageTargets.push(contentPageIndex);
       setBuildStatus(`Adding content ${i + 1} of ${buildState.entries.length}: ${entry.file.name}`);
       await appendPdfToOutput(output, entry.file);
+    }
+
+    if (buildState.indexFile && els.createIndexLinks.checked) {
+      const rows = buildState.indexInfo?.rows || [];
+      setBuildStatus(`Creating ${rows.length} linked index entr${rows.length === 1 ? 'y' : 'ies'}…`);
+      rows.forEach((row) => {
+        const targetPageIndex = contentPageTargets[row.number - 1];
+        const sourcePage = output.getPage(indexPageStart + row.pageIndex);
+        if (targetPageIndex == null || !sourcePage) {
+          throw new Error(`Could not map index row ${row.number} to its final content page.`);
+        }
+        addInternalLinkAnnotation(output, sourcePage, row.rect, targetPageIndex);
+        indexLinksCreated += 1;
+      });
     }
 
     if (bookmarks.length) {
@@ -1428,9 +1900,13 @@ async function buildAndDownload() {
     const bytes = await output.save();
     const filename = sanitizePdfFilename(els.buildOutputName.value || 'Rebuilt Binder.pdf');
     downloadBlob(new Blob([bytes], { type: 'application/pdf' }), filename);
-    const tabPhrase = els.insertBuildTabs.checked ? ` with ${buildState.entries.length} positional tab PDF${buildState.entries.length === 1 ? '' : 's'}` : '';
-    const bookmarkPhrase = bookmarks.length ? ` and ${bookmarks.length} bookmark${bookmarks.length === 1 ? '' : 's'}` : '';
-    setBuildStatus(`Built ${filename} from ${buildState.entries.length} content PDF${buildState.entries.length === 1 ? '' : 's'}${tabPhrase}${bookmarkPhrase}.`, 'success');
+    const indexPhrase = indexPageCount
+      ? ` with ${indexPageCount} index page${indexPageCount === 1 ? '' : 's'}${indexLinksCreated ? ` and ${indexLinksCreated} linked index entr${indexLinksCreated === 1 ? 'y' : 'ies'}` : ''}`
+      : '';
+    const tabPhrase = els.insertBuildTabs.checked ? `, ${buildState.entries.length} positional tab PDF${buildState.entries.length === 1 ? '' : 's'}` : '';
+    const bookmarkPhrase = bookmarks.length ? `, and ${bookmarks.length} bookmark${bookmarks.length === 1 ? '' : 's'}` : '';
+    const cleanupPhrase = oldIndexLinksRemoved ? ` Existing index link annotation${oldIndexLinksRemoved === 1 ? ' was' : 's were'} replaced.` : '';
+    setBuildStatus(`Built ${filename}${indexPhrase}${tabPhrase}${bookmarkPhrase}.${cleanupPhrase}`, 'success');
   } catch (error) {
     console.error(error);
     setBuildStatus(`Could not build the binder: ${friendlyError(error)}`, 'error');
@@ -1443,17 +1919,20 @@ function exportBuildXlsx() {
   if (!buildState.entries.length) return;
 
   const workbook = XLSX.utils.book_new();
+  const indexRowsByNumber = new Map((buildState.indexInfo?.rows || []).map((row) => [row.number, row]));
   const rows = buildState.entries.map((entry, index) => ({
     Order: index + 1,
     'Tab Position': els.insertBuildTabs.checked ? index + 1 : '',
     'Tab Filename': els.insertBuildTabs.checked ? (buildState.tabFiles[index]?.file.name || '') : '',
     'Bookmark Title': els.insertBuildTabs.checked && els.createBuildBookmarks.checked ? (buildState.tabFiles[index]?.bookmarkTitle || '') : '',
+    'Index Description': indexRowsByNumber.get(index + 1)?.description || '',
+    'Index Date': indexRowsByNumber.get(index + 1)?.date || '',
     Description: entry.description,
     Filename: entry.file.name,
     'File Size': formatBytes(entry.file.size),
   }));
   const sheet = XLSX.utils.json_to_sheet(rows);
-  sheet['!cols'] = [{ wch: 8 }, { wch: 14 }, { wch: 26 }, { wch: 28 }, { wch: 44 }, { wch: 50 }, { wch: 14 }];
+  sheet['!cols'] = [{ wch: 8 }, { wch: 14 }, { wch: 26 }, { wch: 28 }, { wch: 50 }, { wch: 16 }, { wch: 44 }, { wch: 50 }, { wch: 14 }];
   XLSX.utils.book_append_sheet(workbook, sheet, 'Manifest');
 
   const configSheet = XLSX.utils.aoa_to_sheet([
@@ -1462,6 +1941,10 @@ function exportBuildXlsx() {
     ['Tab semantics', 'position'],
     ['Tabs inserted', els.insertBuildTabs.checked ? 'Yes' : 'No'],
     ['Tab bookmarks created', els.insertBuildTabs.checked && els.createBuildBookmarks.checked ? 'Yes' : 'No'],
+    ['Index PDF', buildState.indexFile?.name || ''],
+    ['Index pages', buildState.indexInfo?.pageCount || ''],
+    ['Index Description links created', buildState.indexFile && els.createIndexLinks.checked ? 'Yes' : 'No'],
+    ['Detected index rows', buildState.indexInfo?.rows?.length || ''],
   ]);
   configSheet['!cols'] = [{ wch: 22 }, { wch: 70 }];
   XLSX.utils.book_append_sheet(workbook, configSheet, 'Binder Settings');

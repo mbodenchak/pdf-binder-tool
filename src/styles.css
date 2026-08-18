@@ -140,3 +140,16 @@ td input { width: 100%; min-width: 130px; border: 1px solid #ccd4df; border-radi
 }
 
 .muted { color: #7b8491; font-size: .76rem; }
+
+.index-panel { overflow: hidden; margin-bottom: 16px; }
+.index-detection-summary { max-width: 460px; color: #687385; font-size: .8rem; font-weight: 700; text-align: right; line-height: 1.35; }
+.index-detection-summary.success { color: #2d6c46; }
+.index-detection-summary.error { color: #a23b3b; }
+.index-table td:nth-child(3) { min-width: 320px; }
+.index-table td:nth-child(5) { min-width: 280px; }
+.index-destination { color: #2d6c46; font-weight: 700; }
+.index-destination.missing { color: #a23b3b; }
+
+@media (max-width: 900px) {
+  .index-detection-summary { max-width: none; text-align: left; }
+}

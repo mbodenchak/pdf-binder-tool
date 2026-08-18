@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="description" content="Browser-only PDF splitting, manifest editing, and binder rebuilding tool." />
+    <meta name="description" content="Browser-only PDF splitting, manifest editing, linked-index creation, and binder rebuilding tool." />
     <title>PDF Binder Tool</title>
   </head>
   <body>
@@ -12,7 +12,7 @@
         <div>
           <p class="eyebrow">LOCAL PDF WORKSPACE</p>
           <h1>PDF Binder Tool</h1>
-          <p class="subtitle">Split combined PDFs, remove physical divider pages when needed, edit the document manifest, and rebuild binders without uploading PDFs to a server.</p>
+          <p class="subtitle">Split combined PDFs, remove physical divider pages when needed, edit the document manifest, add linked index pages, and rebuild binders without uploading PDFs to a server.</p>
         </div>
         <div class="privacy-badge">Files stay in this browser session</div>
       </header>
@@ -149,6 +149,11 @@
               <input id="build-tabs" type="file" accept="application/pdf,.pdf" multiple hidden />
             </label>
             <button id="clear-build-tabs" disabled>Clear tab PDFs</button>
+            <label class="file-button">
+              Add index PDF
+              <input id="build-index" type="file" accept="application/pdf,.pdf" hidden />
+            </label>
+            <button id="clear-build-index" disabled>Clear index</button>
             <label class="file-button secondary-file-button">
               Import manifest
               <input id="build-manifest" type="file" accept="application/json,.json,.xlsx,.xls" hidden />
@@ -161,6 +166,10 @@
               <input id="create-build-bookmarks" type="checkbox" checked disabled />
               Create bookmarks for positional tabs
             </label>
+            <label class="inline-check">
+              <input id="create-index-links" type="checkbox" checked disabled />
+              Link index descriptions to content
+            </label>
             <label class="output-name-label">
               Output
               <input id="build-output-name" type="text" value="Rebuilt Binder.pdf" />
@@ -168,6 +177,32 @@
             <button id="build-download" class="primary" disabled>Build &amp; download PDF</button>
             <span id="build-status" class="status">Add content PDFs in the order you want, or import a manifest.</span>
           </div>
+
+          <section class="card index-panel">
+            <div class="panel-heading manifest-heading">
+              <div>
+                <h2>Index &amp; links</h2>
+                <p>Add the finished index PDF that should appear at the front of the binder. The app looks for numbered rows and makes the Description cell clickable, with row 1 pointing to the first content page after TAB 1, row 2 to the first content page after TAB 2, and so on.</p>
+              </div>
+              <span id="index-detection-summary" class="index-detection-summary">No index PDF loaded.</span>
+            </div>
+            <div class="table-wrap">
+              <table class="index-table">
+                <thead>
+                  <tr>
+                    <th>Index row</th>
+                    <th>Index page</th>
+                    <th>Description detected</th>
+                    <th>Date detected</th>
+                    <th>Destination in rebuilt binder</th>
+                  </tr>
+                </thead>
+                <tbody id="index-link-body">
+                  <tr><td colspan="5" class="empty-cell">Add an index PDF to detect its numbered rows.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
 
           <section class="card build-panel">
             <div class="panel-heading manifest-heading">
