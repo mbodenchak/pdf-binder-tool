@@ -1,7 +1,7 @@
 import './styles.css';
 import * as pdfjsLib from 'pdfjs-dist';
 import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
-import { PDFArray, PDFDocument, PDFHexString, PDFName, PDFNull } from 'pdf-lib';
+import { PDFArray, PDFDocument, PDFHexString, PDFName } from 'pdf-lib';
 import JSZip from 'jszip';
 import * as XLSX from 'xlsx';
 
@@ -1769,10 +1769,7 @@ function addInternalLinkAnnotation(pdfDoc, sourcePage, rect, targetPageIndex) {
   const context = pdfDoc.context;
   const destination = PDFArray.withContext(context);
   destination.push(targetPage.ref);
-  destination.push(PDFName.of('XYZ'));
-  destination.push(PDFNull);
-  destination.push(PDFNull);
-  destination.push(PDFNull);
+  destination.push(PDFName.of('Fit'));
 
   const link = context.obj({
     Type: 'Annot',
@@ -1803,10 +1800,7 @@ function addTopLevelBookmarks(pdfDoc, bookmarks) {
     const page = pdfDoc.getPage(bookmark.pageIndex);
     const destination = PDFArray.withContext(context);
     destination.push(page.ref);
-    destination.push(PDFName.of('XYZ'));
-    destination.push(PDFNull);
-    destination.push(PDFNull);
-    destination.push(PDFNull);
+    destination.push(PDFName.of('Fit'));
 
     const item = context.obj({
       Title: PDFHexString.fromText(bookmark.title),

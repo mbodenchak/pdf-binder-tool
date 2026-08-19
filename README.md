@@ -1,4 +1,4 @@
-# PDF Binder Tool — browser-only MVP v0.7.1
+# PDF Binder Tool — browser-only MVP v0.7.2
 
 A client-side PDF workspace for splitting combined PDFs, extracting physical tab divider pages, editing a document manifest, rebuilding binders with positional tabs, and adding clickable links from a supplied index PDF to the final document contents.
 
@@ -138,6 +138,17 @@ Each section records its source-page range, boundary type, label, description, f
 - Page-count calculation for loaded build PDFs so the final-order view can preview final binder pagination before assembly.
 - Optional saved tab-library handling using the browser File System Access API where supported, while retaining download-based fallback behavior.
 
+
+
+## v0.7.2 — Fit Page destinations
+
+Generated navigation now uses the PDF `/Fit` destination type:
+
+- Clicking a generated index Description link opens the first content page after its positional tab using **Fit Page**.
+- Clicking a generated positional TAB bookmark opens that tab page using **Fit Page**.
+- This controls the destination page zoom so the whole page fits in the viewer window; it does not force the PDF application into full-screen mode or hide its panels/toolbars.
+
+No split, merge, ordering, index-detection, or bookmark-title behavior changed in this release.
 
 ## v0.7.1 fix
 
