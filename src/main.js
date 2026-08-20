@@ -23,6 +23,7 @@ const els = {
   previewLabel: document.querySelector('#preview-label'),
   toggleCurrentMarker: document.querySelector('#toggle-current-marker'),
   splitAfterCurrent: document.querySelector('#split-after-current'),
+  nextTab: document.querySelector('#next-tab'),
 
   currentSectionEditor: document.querySelector('#current-section-editor'),
   currentSectionPages: document.querySelector('#current-section-pages'),
@@ -111,6 +112,7 @@ els.detectTabs.addEventListener('click', detectTabPages);
 els.clearMarkers.addEventListener('click', resetDivisions);
 els.toggleCurrentMarker.addEventListener('click', () => toggleTabMarker(splitState.selectedPage));
 els.splitAfterCurrent.addEventListener('click', () => toggleSplitAfter(splitState.selectedPage));
+els.nextTab.addEventListener('click', goToNextTab);
 els.splitDownload.addEventListener('click', splitAndDownload);
 els.preserveTabPdfs.addEventListener('change', rebuildManifest);
 els.importSplitManifest.addEventListener('change', importSplitManifest);
@@ -544,6 +546,7 @@ function setSplitControls(enabled) {
   els.splitDownload.disabled = !enabled;
   els.toggleCurrentMarker.disabled = !enabled;
   els.splitAfterCurrent.disabled = !enabled;
+  els.nextTab.disabled = !enabled;
   els.exportManifestJson.disabled = !enabled;
   els.exportManifestCsv.disabled = !enabled;
   els.exportManifestXlsx.disabled = !enabled;
@@ -654,10 +657,33 @@ function toggleSplitAfter(pageIndex) {
   updateMarkerButtons();
 }
 
+async function goToNextTab() {
+  if (!splitState.pdfjsDoc) return;
+
+  const nextTabIndex = [...splitState.tabMarkers]
+    .filter((index) => index > splitState.selectedPage)
+    .sort((a, b) => a - b)[0];
+  if (nextTabIndex == null) return;
+
+  splitState.selectedPage = nextTabIndex;
+  updateThumbnailClasses();
+
+  const card = els.thumbnailList.querySelector(`[data-page-index="${nextTabIndex}"]`);
+  card?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+  await renderPreview(nextTabIndex);
+}
+
 function updateMarkerButtons() {
   if (!splitState.pdfjsDoc) return;
   const pageIndex = splitState.selectedPage;
   const isLastPage = pageIndex === splitState.pdfjsDoc.numPages - 1;
+  const nextTabIndex = [...splitState.tabMarkers]
+    .filter((index) => index > pageIndex)
+    .sort((a, b) => a - b)[0];
+
+  els.nextTab.disabled = nextTabIndex == null;
+  els.nextTab.textContent = nextTabIndex == null ? 'No later tab' : `Next tab → ${nextTabIndex + 1}`;
 
   els.toggleCurrentMarker.disabled = false;
   els.toggleCurrentMarker.textContent = splitState.tabMarkers.has(pageIndex)
