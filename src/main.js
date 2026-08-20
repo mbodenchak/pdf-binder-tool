@@ -29,6 +29,7 @@ const els = {
   currentSectionFilenameMode: document.querySelector('#current-section-filename-mode'),
   currentSectionLabel: document.querySelector('#current-section-label'),
   currentSectionDescription: document.querySelector('#current-section-description'),
+  currentSectionDate: document.querySelector('#current-section-date'),
   currentSectionFilename: document.querySelector('#current-section-filename'),
 
   manifestBody: document.querySelector('#manifest-body'),
@@ -39,6 +40,15 @@ const els = {
   filenameTemplate: document.querySelector('#filename-template'),
   applyFilenameTemplate: document.querySelector('#apply-filename-template'),
   manifestValidationSummary: document.querySelector('#manifest-validation-summary'),
+  pasteIndexNames: document.querySelector('#paste-index-names'),
+  bulkPasteDialog: document.querySelector('#bulk-paste-dialog'),
+  bulkPasteInput: document.querySelector('#bulk-paste-input'),
+  bulkPasteSummary: document.querySelector('#bulk-paste-summary'),
+  bulkPastePreview: document.querySelector('#bulk-paste-preview'),
+  bulkRegenerateFilenames: document.querySelector('#bulk-regenerate-filenames'),
+  applyBulkPaste: document.querySelector('#apply-bulk-paste'),
+  cancelBulkPaste: document.querySelector('#cancel-bulk-paste'),
+  closeBulkPaste: document.querySelector('#close-bulk-paste'),
 
   buildFiles: document.querySelector('#build-files'),
   buildTabs: document.querySelector('#build-tabs'),
@@ -69,6 +79,7 @@ const splitState = {
   sectionMeta: new Map(),
   detectedLabels: new Map(),
   renderToken: 0,
+  bulkPaste: { rows: [], canApply: false, source: '', issues: [] },
 };
 
 const buildState = {
@@ -121,7 +132,20 @@ els.applyFilenameTemplate.addEventListener('click', () => {
 
 els.currentSectionLabel.addEventListener('input', () => updateCurrentSectionField('label', els.currentSectionLabel.value));
 els.currentSectionDescription.addEventListener('input', () => updateCurrentSectionField('description', els.currentSectionDescription.value));
+els.currentSectionDate.addEventListener('input', () => updateCurrentSectionField('date', els.currentSectionDate.value));
 els.currentSectionFilename.addEventListener('input', () => updateCurrentSectionField('filename', els.currentSectionFilename.value, true));
+
+els.pasteIndexNames.addEventListener('click', openBulkPasteDialog);
+els.bulkPasteInput.addEventListener('paste', handleBulkPasteEvent);
+els.bulkPasteInput.addEventListener('input', () => analyzeBulkPaste('', els.bulkPasteInput.value));
+els.bulkRegenerateFilenames.addEventListener('change', renderBulkPastePreview);
+els.applyBulkPaste.addEventListener('click', applyBulkPasteEntries);
+els.cancelBulkPaste.addEventListener('click', closeBulkPasteDialog);
+els.closeBulkPaste.addEventListener('click', closeBulkPasteDialog);
+els.bulkPasteDialog.addEventListener('cancel', (event) => {
+  event.preventDefault();
+  closeBulkPasteDialog();
+});
 
 els.buildFiles.addEventListener('change', (event) => {
   addBuildFiles([...event.target.files]);
@@ -163,6 +187,307 @@ els.buildManifest.addEventListener('change', importBuildManifest);
 els.buildDownload.addEventListener('click', buildAndDownload);
 els.exportBuildXlsx.addEventListener('click', exportBuildXlsx);
 
+
+const SAFE_FILENAME_MAX_LENGTH = 120;
+const WINDOWS_RESERVED_BASENAMES = /^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/i;
+
+function openBulkPasteDialog() {
+  const sections = getSections();
+  if (!sections.length) {
+    setSplitStatus('Create at least one output section before pasting index entries.', 'error');
+    return;
+  }
+
+  splitState.bulkPaste = { rows: [], canApply: false, source: '', issues: [] };
+  els.bulkPasteInput.value = '';
+  renderBulkPastePreview();
+
+  if (typeof els.bulkPasteDialog.showModal === 'function') {
+    els.bulkPasteDialog.showModal();
+  } else {
+    els.bulkPasteDialog.setAttribute('open', '');
+  }
+  setTimeout(() => els.bulkPasteInput.focus(), 0);
+}
+
+function closeBulkPasteDialog() {
+  if (typeof els.bulkPasteDialog.close === 'function' && els.bulkPasteDialog.open) {
+    els.bulkPasteDialog.close();
+  } else {
+    els.bulkPasteDialog.removeAttribute('open');
+  }
+}
+
+function handleBulkPasteEvent(event) {
+  const html = event.clipboardData?.getData('text/html') || '';
+  const text = event.clipboardData?.getData('text/plain') || '';
+  if (!html && !text) return;
+
+  event.preventDefault();
+  els.bulkPasteInput.value = text;
+  analyzeBulkPaste(html, text);
+}
+
+function analyzeBulkPaste(html, text) {
+  const htmlRows = html ? parseWordTableHtml(html) : [];
+  const rows = htmlRows.length ? htmlRows : parsePlainIndexText(text);
+  const source = htmlRows.length ? 'Word/HTML table' : rows.length ? 'plain text' : '';
+  const analysis = validateBulkPasteRows(rows, getSections());
+
+  splitState.bulkPaste = {
+    rows: analysis.rows,
+    canApply: analysis.canApply,
+    source,
+    issues: analysis.issues,
+  };
+  renderBulkPastePreview();
+}
+
+function parseWordTableHtml(html) {
+  try {
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    const candidates = [...doc.querySelectorAll('table')].map((table) => {
+      const rows = [];
+      [...table.querySelectorAll('tr')].forEach((tr) => {
+        const cells = [...tr.children]
+          .filter((node) => ['TD', 'TH'].includes(node.tagName))
+          .map(extractPastedCellText);
+        const parsed = rowFromCells(cells);
+        if (parsed) rows.push(parsed);
+      });
+      return rows;
+    });
+    candidates.sort((a, b) => b.length - a.length);
+    return candidates[0] || [];
+  } catch (error) {
+    console.warn('Could not parse clipboard HTML table; falling back to plain text.', error);
+    return [];
+  }
+}
+
+function extractPastedCellText(cell) {
+  const chunks = [...cell.childNodes]
+    .map((node) => normalizePastedCell(node.textContent))
+    .filter(Boolean);
+  return normalizePastedCell(chunks.join(' '));
+}
+
+function rowFromCells(cells) {
+  if (cells.length < 2) return null;
+  const numberIndex = cells.findIndex((cell) => parsePastedRowNumber(cell) != null);
+  if (numberIndex < 0) return null;
+
+  const number = parsePastedRowNumber(cells[numberIndex]);
+  const trailing = cells.slice(numberIndex + 1);
+  if (!trailing.length) return null;
+
+  const description = normalizePastedCell(trailing[0]);
+  const date = normalizePastedCell(trailing.length > 1 ? trailing[trailing.length - 1] : '');
+  if (!description || normalizeHeader(description) === 'description') return null;
+
+  return { number, description, date };
+}
+
+function parsePlainIndexText(text) {
+  const source = String(text || '').replace(/\u00a0/g, ' ');
+  if (!source.trim()) return [];
+
+  const lines = source.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+
+  // First choice for plain clipboard text from Word tables: tab-separated cells.
+  const tabRows = [];
+  lines.forEach((line) => {
+    if (!line.includes('\t')) return;
+    const parsed = rowFromCells(line.split(/\t+/).map(normalizePastedCell));
+    if (parsed) tabRows.push(parsed);
+  });
+  if (tabRows.length) return tabRows;
+
+  // Fallback: group lines under explicit numbered entries. This also handles
+  // clipboard text where Word emits each cell on its own line.
+  const groups = [];
+  let current = null;
+  lines.forEach((line) => {
+    const standalone = line.match(/^\s*(\d{1,3})\s*[.)]?\s*$/);
+    const inline = line.match(/^\s*(\d{1,3})\s*[.)]\s+(.+)$/);
+
+    if (standalone || inline) {
+      if (current) groups.push(current);
+      current = {
+        number: Number((standalone || inline)[1]),
+        parts: inline ? [inline[2]] : [],
+      };
+      return;
+    }
+
+    if (current) current.parts.push(line);
+  });
+  if (current) groups.push(current);
+
+  return groups.map((group) => {
+    const parts = group.parts.map(normalizePastedCell).filter(Boolean);
+    let date = '';
+    if (parts.length > 1 && looksLikePastedIndexDate(parts[parts.length - 1])) date = parts.pop();
+    return {
+      number: group.number,
+      description: normalizePastedCell(parts.join(' ')),
+      date,
+    };
+  }).filter((row) => row.description);
+}
+
+function parsePastedRowNumber(value) {
+  const match = String(value || '').trim().match(/^(\d{1,3})\s*[.)]?$/);
+  return match ? Number(match[1]) : null;
+}
+
+function looksLikePastedIndexDate(value) {
+  const text = normalizePastedCell(value);
+  return /^(?:\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2}|\d{4}\s*[-–]\s*\d{4}|\d{4})$/.test(text);
+}
+
+function normalizePastedCell(value) {
+  return String(value || '')
+    .replace(/\u00a0/g, ' ')
+    .replace(/[\r\n\t]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function validateBulkPasteRows(rows, sections) {
+  const cleaned = rows.map((row) => ({
+    number: Number(row.number),
+    description: normalizePastedCell(row.description),
+    date: normalizePastedCell(row.date),
+  })).filter((row) => Number.isInteger(row.number) && row.number > 0);
+
+  const issues = [];
+  const seen = new Map();
+  cleaned.forEach((row) => seen.set(row.number, (seen.get(row.number) || 0) + 1));
+  const duplicates = [...seen.entries()].filter(([, count]) => count > 1).map(([number]) => number);
+  if (duplicates.length) issues.push(`Duplicate row number${duplicates.length === 1 ? '' : 's'}: ${duplicates.join(', ')}.`);
+
+  const expected = sections.map((section) => section.order);
+  const actual = new Set(cleaned.map((row) => row.number));
+  const missing = expected.filter((number) => !actual.has(number));
+  const extra = [...actual].filter((number) => number < 1 || number > sections.length).sort((a, b) => a - b);
+
+  if (cleaned.length !== sections.length) {
+    issues.push(`Detected ${cleaned.length} entr${cleaned.length === 1 ? 'y' : 'ies'}, but there are ${sections.length} output sections.`);
+  }
+  if (missing.length) issues.push(`Missing position${missing.length === 1 ? '' : 's'}: ${missing.join(', ')}.`);
+  if (extra.length) issues.push(`Unexpected position${extra.length === 1 ? '' : 's'}: ${extra.join(', ')}.`);
+
+  const blankDescriptions = cleaned.filter((row) => !row.description).map((row) => row.number);
+  if (blankDescriptions.length) issues.push(`Blank description at position${blankDescriptions.length === 1 ? '' : 's'}: ${blankDescriptions.join(', ')}.`);
+
+  const canApply = cleaned.length === sections.length
+    && !duplicates.length
+    && !missing.length
+    && !extra.length
+    && !blankDescriptions.length;
+
+  return { rows: cleaned.sort((a, b) => a.number - b.number), issues, canApply };
+}
+
+function renderBulkPastePreview() {
+  const { rows, canApply, source, issues } = splitState.bulkPaste;
+  const sections = getSections();
+  els.applyBulkPaste.disabled = !canApply;
+
+  if (!rows.length) {
+    els.bulkPasteSummary.textContent = 'Paste an index table to preview detected entries.';
+    els.bulkPasteSummary.className = 'bulk-paste-summary';
+    els.bulkPastePreview.innerHTML = '<tr><td colspan="5" class="empty-cell">Nothing pasted yet.</td></tr>';
+    return;
+  }
+
+  if (canApply) {
+    els.bulkPasteSummary.textContent = `${rows.length} entries detected from ${source || 'clipboard text'}. Numbering matches all ${sections.length} current sections.`;
+    els.bulkPasteSummary.className = 'bulk-paste-summary success';
+  } else {
+    els.bulkPasteSummary.textContent = issues.join(' ');
+    els.bulkPasteSummary.className = 'bulk-paste-summary error';
+  }
+
+  els.bulkPastePreview.innerHTML = '';
+  rows.forEach((row) => {
+    const section = sections[row.number - 1];
+    const filenameInfo = section ? previewFilenameForPastedRow(row, section) : null;
+    const tr = document.createElement('tr');
+    if (!section) tr.classList.add('row-has-error');
+
+    const adjustmentText = filenameInfo?.adjusted ? 'Adjusted' : 'Ready';
+    const statusClass = filenameInfo?.adjusted ? 'warning' : section ? 'ok' : 'error';
+    const statusTitle = filenameInfo?.reasons?.join('\n') || (section ? 'Filename already cross-platform safe.' : 'No matching output section.');
+
+    tr.innerHTML = `
+      <td>${row.number}</td>
+      <td>${escapeHtml(row.description)}</td>
+      <td>${escapeHtml(row.date || '')}</td>
+      <td class="bulk-filename-cell">${escapeHtml(filenameInfo?.safe || '—')}</td>
+      <td><span class="row-status ${statusClass}" title="${escapeAttr(statusTitle)}">${section ? (filenameInfo?.adjusted ? '!' : '✓') : '!'}</span><span class="bulk-status-text">${adjustmentText}</span></td>
+    `;
+    els.bulkPastePreview.append(tr);
+  });
+}
+
+function previewFilenameForPastedRow(row, section) {
+  if (!els.bulkRegenerateFilenames.checked) {
+    const safe = sanitizePdfFilename(section.filename);
+    return { safe, adjusted: safe !== section.filename, reasons: filenameAdjustmentReasons(section.filename, safe) };
+  }
+
+  const context = {
+    order: row.number,
+    label: section.label,
+    description: row.description,
+    date: row.date,
+    startPage: section.startPage,
+    endPage: section.endPage,
+    original: stripExtension(splitState.file?.name || 'Source'),
+  };
+  const raw = renderFilenameTemplateRaw(els.filenameTemplate.value, context);
+  const safe = sanitizePdfFilename(raw);
+  return { safe, adjusted: safe !== raw, reasons: filenameAdjustmentReasons(raw, safe) };
+}
+
+function filenameAdjustmentReasons(rawValue, safeValue) {
+  const raw = String(rawValue || '');
+  const reasons = [];
+  if (/[<>:"/\\|?*\x00-\x1F]/.test(raw)) reasons.push('Removed or replaced characters that are unsafe on Windows/macOS.');
+  if (/[. ](?:\.pdf)?$/i.test(raw.trimEnd()) || /[. ]$/.test(stripExtension(raw))) reasons.push('Removed a trailing period or space.');
+  const rawBase = stripExtension(raw).trim().replace(/[. ]+$/g, '');
+  if (WINDOWS_RESERVED_BASENAMES.test(rawBase)) reasons.push('Adjusted a Windows-reserved filename.');
+  if ([...raw].length > SAFE_FILENAME_MAX_LENGTH) reasons.push(`Shortened to the ${SAFE_FILENAME_MAX_LENGTH}-character filename limit used by this app.`);
+  if (!reasons.length && raw !== safeValue) reasons.push('Normalized the filename for cross-platform compatibility.');
+  return reasons;
+}
+
+function applyBulkPasteEntries() {
+  const { rows, canApply } = splitState.bulkPaste;
+  if (!canApply) return;
+
+  const sections = getSections();
+  const regenerate = els.bulkRegenerateFilenames.checked;
+  rows.forEach((row) => {
+    const section = sections[row.number - 1];
+    if (!section) return;
+    const meta = getOrCreateSectionMeta(section.key);
+    meta.description = row.description;
+    meta.date = row.date;
+    if (regenerate) {
+      delete meta.filename;
+      meta.filenameLocked = false;
+    }
+  });
+
+  rebuildManifest();
+  closeBulkPasteDialog();
+  const filenamePhrase = regenerate ? ' Safe filenames were regenerated from the current template.' : ' Existing filenames were preserved.';
+  setSplitStatus(`Applied ${rows.length} pasted index entr${rows.length === 1 ? 'y' : 'ies'} to the manifest.${filenamePhrase}`, 'success');
+}
+
 async function loadBinder(file) {
   try {
     setSplitStatus(`Opening ${file.name}…`);
@@ -199,13 +524,15 @@ function resetSplitState() {
   splitState.splitAfter = new Set();
   splitState.sectionMeta = new Map();
   splitState.detectedLabels = new Map();
+  splitState.bulkPaste = { rows: [], canApply: false, source: '', issues: [] };
+  if (els.bulkPasteDialog?.open) closeBulkPasteDialog();
 
   els.thumbnailList.innerHTML = 'No PDF loaded.';
   els.thumbnailList.className = 'thumbnail-list empty-state';
   els.previewStage.innerHTML = 'Open a PDF to preview pages.';
   els.previewStage.className = 'preview-stage empty-state';
   els.previewLabel.textContent = 'No page selected.';
-  els.manifestBody.innerHTML = '<tr><td colspan="7" class="empty-cell">No divisions yet.</td></tr>';
+  els.manifestBody.innerHTML = '<tr><td colspan="8" class="empty-cell">No divisions yet.</td></tr>';
   els.manifestValidationSummary.textContent = 'No sections yet.';
   els.manifestValidationSummary.className = 'validation-summary';
   hideCurrentSectionEditor();
@@ -221,6 +548,7 @@ function setSplitControls(enabled) {
   els.exportManifestCsv.disabled = !enabled;
   els.exportManifestXlsx.disabled = !enabled;
   els.applyFilenameTemplate.disabled = !enabled;
+  els.pasteIndexNames.disabled = !enabled;
 }
 
 async function renderThumbnails() {
@@ -482,6 +810,7 @@ function getSections() {
     const defaultDescription = detectedLabel ?? `Section ${order}`;
     const label = existing.label ?? defaultLabel;
     const description = existing.description ?? defaultDescription;
+    const date = existing.date ?? '';
     const startIndex = raw.pageIndexes[0];
     const endIndex = raw.pageIndexes[raw.pageIndexes.length - 1];
 
@@ -489,6 +818,7 @@ function getSections() {
       order,
       label,
       description,
+      date,
       startPage: startIndex + 1,
       endPage: endIndex + 1,
       original: stripExtension(splitState.file?.name || 'Source'),
@@ -513,6 +843,7 @@ function getSections() {
       pageCount: raw.pageIndexes.length,
       label,
       description,
+      date,
       filename,
       filenameLocked: Boolean(existing.filenameLocked),
     };
@@ -579,11 +910,12 @@ function renderManifestTable() {
   els.exportManifestCsv.disabled = !hasSections;
   els.exportManifestXlsx.disabled = !hasSections;
   els.applyFilenameTemplate.disabled = !hasSections;
+  els.pasteIndexNames.disabled = !hasSections;
 
   updateManifestValidationSummary(validation, sections.length);
 
   if (!sections.length) {
-    els.manifestBody.innerHTML = '<tr><td colspan="7" class="empty-cell">No output sections. Add a normal split cut, detect tabs, or mark divider pages manually.</td></tr>';
+    els.manifestBody.innerHTML = '<tr><td colspan="8" class="empty-cell">No output sections. Add a normal split cut, detect tabs, or mark divider pages manually.</td></tr>';
     return;
   }
 
@@ -605,6 +937,7 @@ function renderManifestTable() {
       <td>${section.startPage}–${section.endPage} <span class="muted">(${section.pageCount})</span></td>
       <td><input data-field="label" value="${escapeAttr(section.label)}" /></td>
       <td><input data-field="description" value="${escapeAttr(section.description)}" /></td>
+      <td><input data-field="date" value="${escapeAttr(section.date)}" /></td>
       <td><input data-field="filename" value="${escapeAttr(section.filename)}" title="${section.filenameLocked ? 'Manual filename' : 'Generated from filename template'}" /></td>
     `;
 
@@ -752,6 +1085,7 @@ function updateCurrentSectionEditor() {
   els.currentSectionPages.textContent = `Pages ${section.startPage}–${section.endPage}`;
   els.currentSectionLabel.value = section.label;
   els.currentSectionDescription.value = section.description;
+  els.currentSectionDate.value = section.date;
   els.currentSectionFilename.value = section.filename;
   els.currentSectionFilenameMode.textContent = section.filenameLocked ? 'manual filename' : 'auto filename';
   els.currentSectionFilenameMode.className = `filename-mode${section.filenameLocked ? ' manual' : ''}`;
@@ -762,6 +1096,7 @@ function syncCurrentSectionEditorValues() {
   if (!section) return;
   if (document.activeElement !== els.currentSectionLabel) els.currentSectionLabel.value = section.label;
   if (document.activeElement !== els.currentSectionDescription) els.currentSectionDescription.value = section.description;
+  if (document.activeElement !== els.currentSectionDate) els.currentSectionDate.value = section.date;
   if (document.activeElement !== els.currentSectionFilename) els.currentSectionFilename.value = section.filename;
   els.currentSectionPages.textContent = `Pages ${section.startPage}–${section.endPage}`;
   els.currentSectionFilenameMode.textContent = section.filenameLocked ? 'manual filename' : 'auto filename';
@@ -787,6 +1122,10 @@ function updateCurrentSectionField(field, value, lockFilename = false) {
 }
 
 function renderFilenameTemplate(template, context) {
+  return sanitizePdfFilename(renderFilenameTemplateRaw(template, context));
+}
+
+function renderFilenameTemplateRaw(template, context) {
   const source = String(template || '').trim() || '{order:02} - {description}.pdf';
   let rendered = source.replace(/\{([^}]+)\}/g, (_, tokenText) => {
     const [token, format] = String(tokenText).split(':');
@@ -872,7 +1211,7 @@ function makeManifestObject() {
   const tabFilenameByPage = new Map(tabAssets.map((tab) => [tab.tabPage, tab.filename]));
 
   return {
-    schema: 'pdf-binder-tool/5',
+    schema: 'pdf-binder-tool/6',
     sourceFile: splitState.file?.name ?? null,
     generatedAt: new Date().toISOString(),
     tabSemantics: 'position',
@@ -899,6 +1238,7 @@ function makeManifestObject() {
       pageCount: section.pageCount,
       label: section.label,
       description: section.description,
+      date: section.date,
       filename: sanitizePdfFilename(section.filename),
       filenameMode: section.filenameLocked ? 'manual' : 'template',
       tabFilename: section.tabPage == null ? null : tabFilenameByPage.get(section.tabPage) ?? null,
@@ -925,8 +1265,8 @@ function exportManifestXlsx() {
 }
 
 function manifestToCsv(sections) {
-  const headers = ['Order', 'Boundary Type', 'Boundary Page', 'Tab Page (Excluded)', 'Split After Page', 'Start Page', 'End Page', 'Page Count', 'Label', 'Description', 'Filename', 'Filename Mode', 'Tab Filename'];
-  const rows = sections.map((s) => [s.order, s.boundaryType, s.boundaryPage, s.tabPage, s.splitAfterPage, s.startPage, s.endPage, s.pageCount, s.label, s.description, s.filename, s.filenameMode, s.tabFilename]);
+  const headers = ['Order', 'Boundary Type', 'Boundary Page', 'Tab Page (Excluded)', 'Split After Page', 'Start Page', 'End Page', 'Page Count', 'Label', 'Description', 'Date', 'Filename', 'Filename Mode', 'Tab Filename'];
+  const rows = sections.map((s) => [s.order, s.boundaryType, s.boundaryPage, s.tabPage, s.splitAfterPage, s.startPage, s.endPage, s.pageCount, s.label, s.description, s.date, s.filename, s.filenameMode, s.tabFilename]);
   return [headers, ...rows].map((row) => row.map(csvEscape).join(',')).join('\r\n');
 }
 
@@ -936,6 +1276,7 @@ function makeManifestWorkbookBytes(manifest) {
     Order: section.order,
     Label: section.label,
     Description: section.description,
+    Date: section.date,
     Filename: section.filename,
     'Filename Mode': section.filenameMode,
     'Boundary Type': section.boundaryType,
@@ -949,7 +1290,7 @@ function makeManifestWorkbookBytes(manifest) {
   }));
   const manifestSheet = XLSX.utils.json_to_sheet(rows);
   manifestSheet['!cols'] = [
-    { wch: 8 }, { wch: 18 }, { wch: 38 }, { wch: 44 }, { wch: 14 },
+    { wch: 8 }, { wch: 18 }, { wch: 38 }, { wch: 18 }, { wch: 44 }, { wch: 14 },
     { wch: 14 }, { wch: 14 }, { wch: 18 }, { wch: 18 }, { wch: 12 },
     { wch: 12 }, { wch: 12 }, { wch: 24 },
   ];
@@ -962,8 +1303,8 @@ function makeManifestWorkbookBytes(manifest) {
     ['Filename template', manifest.filenameTemplate || ''],
     [],
     ['Editing guidance'],
-    ['You may edit Order, Label, Description, Filename, and Tab Filename for binder planning.'],
-    ['When importing this workbook back into an already-open source PDF, the app uses Label, Description, and Filename only.'],
+    ['You may edit Order, Label, Description, Date, Filename, and Tab Filename for binder planning.'],
+    ['When importing this workbook back into an already-open source PDF, the app uses Label, Description, Date, and Filename only.'],
     ['Page/boundary columns are reference data; spreadsheet edits do not change source-PDF split points.'],
   ];
   const instructionsSheet = XLSX.utils.aoa_to_sheet(instructions);
@@ -991,6 +1332,7 @@ async function importSplitManifest(event) {
       const meta = getOrCreateSectionMeta(current.key);
       if (imported.label != null && imported.label !== '') meta.label = String(imported.label);
       if (imported.description != null && imported.description !== '') meta.description = String(imported.description);
+      if (imported.date != null && imported.date !== '') meta.date = String(imported.date);
       if (imported.filename != null && imported.filename !== '') {
         meta.filename = String(imported.filename);
         meta.filenameLocked = true;
@@ -1023,6 +1365,7 @@ function makeBuildEntry(file) {
     id: makeId(),
     file,
     description: humanizeFilename(file.name),
+    date: '',
   };
 }
 
@@ -1468,6 +1811,7 @@ function manifestFromSpreadsheetRows(rows) {
     order: numberOrNull(getSpreadsheetValue(row, ['Order'])) ?? index + 1,
     label: getSpreadsheetValue(row, ['Label']),
     description: getSpreadsheetValue(row, ['Description']),
+    date: getSpreadsheetValue(row, ['Date', 'Document Date']),
     filename: getSpreadsheetValue(row, ['Filename', 'Output Filename', 'Content PDF']),
     filenameMode: getSpreadsheetValue(row, ['Filename Mode']),
     boundaryType: getSpreadsheetValue(row, ['Boundary Type']),
@@ -1526,6 +1870,7 @@ function applyBuildManifestMetadata() {
   buildState.entries.forEach((entry) => {
     const match = byFilename.get(entry.file.name);
     if (match?.description != null && match.description !== '') entry.description = String(match.description);
+    if (match?.date != null && match.date !== '') entry.date = String(match.date);
   });
 }
 
@@ -1968,13 +2313,37 @@ function humanizeFilename(filename) {
     .trim();
 }
 
-function sanitizePdfFilename(value) {
-  let name = String(value || 'section.pdf')
-    .replace(/[<>:"/\\|?*\x00-\x1F]/g, '')
+function sanitizePdfFilename(value, maxLength = SAFE_FILENAME_MAX_LENGTH) {
+  let raw = String(value || 'section.pdf').normalize('NFC');
+  raw = raw.replace(/\.pdf$/i, '');
+
+  let base = raw
+    .replace(/(\d):(?=\d)/g, '$1-')
+    .replace(/(\d)\/(?=\d)/g, '$1-')
+    .replace(/[:/\\]/g, ' - ')
+    .replace(/[<>|*\x00-\x1F]/g, '-')
+    .replace(/["?]/g, '')
+    .replace(/-{2,}/g, '-')
     .replace(/\s+/g, ' ')
-    .trim();
-  if (!name.toLowerCase().endsWith('.pdf')) name += '.pdf';
-  return name || 'section.pdf';
+    .replace(/\s+-\s+/g, ' - ')
+    .trim()
+    .replace(/[. -]+$/g, '');
+
+  if (!base || base === '.' || base === '..') base = 'section';
+  if (WINDOWS_RESERVED_BASENAMES.test(base)) base = `_${base}`;
+
+  const extension = '.pdf';
+  const maxBaseLength = Math.max(1, maxLength - extension.length);
+  if ([...base].length > maxBaseLength) {
+    const chars = [...base].slice(0, maxBaseLength).join('');
+    const lastSpace = chars.lastIndexOf(' ');
+    base = lastSpace >= Math.floor(maxBaseLength * 0.72) ? chars.slice(0, lastSpace) : chars;
+    base = base.trim().replace(/[. -]+$/g, '');
+  }
+
+  if (!base) base = 'section';
+  if (WINDOWS_RESERVED_BASENAMES.test(base)) base = `_${base}`;
+  return `${base}${extension}`;
 }
 
 function stripExtension(filename) {

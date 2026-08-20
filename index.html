@@ -79,6 +79,10 @@
                     Description
                     <input id="current-section-description" type="text" />
                   </label>
+                  <label>
+                    Date
+                    <input id="current-section-date" type="text" />
+                  </label>
                   <label class="wide-field">
                     Output filename
                     <input id="current-section-filename" type="text" />
@@ -101,6 +105,7 @@
                   Import manifest
                   <input id="import-split-manifest" type="file" accept="application/json,.json,.xlsx,.xls" hidden />
                 </label>
+                <button id="paste-index-names" disabled>Paste Word index</button>
                 <button id="export-manifest-json" disabled>JSON</button>
                 <button id="export-manifest-csv" disabled>CSV</button>
                 <button id="export-manifest-xlsx" disabled>Excel</button>
@@ -113,7 +118,7 @@
                 <input id="filename-template" type="text" value="{order:02} - {description}.pdf" />
               </label>
               <button id="apply-filename-template" disabled>Apply template to all</button>
-              <span class="template-help">Available: {order}, {order:02}, {label}, {description}, {startPage}, {endPage}, {original}</span>
+              <span class="template-help">Available: {order}, {order:02}, {label}, {description}, {date}, {startPage}, {endPage}, {original}. Auto filenames are made Windows/macOS-safe and capped at 120 characters.</span>
               <span id="manifest-validation-summary" class="validation-summary">No sections yet.</span>
             </div>
 
@@ -127,11 +132,12 @@
                     <th>Output pages</th>
                     <th>Label</th>
                     <th>Description</th>
+                    <th>Date</th>
                     <th>Output filename</th>
                   </tr>
                 </thead>
                 <tbody id="manifest-body">
-                  <tr><td colspan="7" class="empty-cell">No divisions yet.</td></tr>
+                  <tr><td colspan="8" class="empty-cell">No divisions yet.</td></tr>
                 </tbody>
               </table>
             </div>
@@ -237,6 +243,54 @@
         </section>
       </main>
     </div>
+
+
+
+    <dialog id="bulk-paste-dialog" class="bulk-paste-dialog">
+      <div class="bulk-paste-shell">
+        <div class="bulk-paste-heading">
+          <div>
+            <p class="eyebrow">BULK METADATA</p>
+            <h2>Paste entries from a Word index</h2>
+            <p>Copy the index table in Word and paste it below. The app prefers the clipboard's table structure, then falls back to tab-delimited/plain text. Numbering must match the current output sections before anything can be applied.</p>
+          </div>
+          <button id="close-bulk-paste" class="dialog-close" type="button" aria-label="Close">×</button>
+        </div>
+
+        <label class="paste-input-label" for="bulk-paste-input">Paste here</label>
+        <textarea id="bulk-paste-input" rows="7" placeholder="Click here, then press Ctrl+V or Cmd+V after copying the Word table."></textarea>
+        <div class="bulk-paste-options">
+          <label class="inline-check">
+            <input id="bulk-regenerate-filenames" type="checkbox" checked />
+            Regenerate safe filenames from pasted descriptions
+          </label>
+          <span>Descriptions remain unchanged; only filenames are sanitized/truncated.</span>
+        </div>
+        <div id="bulk-paste-summary" class="bulk-paste-summary">Paste an index table to preview detected entries.</div>
+
+        <div class="table-wrap bulk-preview-wrap">
+          <table class="bulk-preview-table">
+            <thead>
+              <tr>
+                <th>No.</th>
+                <th>Description</th>
+                <th>Date</th>
+                <th>Generated filename</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody id="bulk-paste-preview">
+              <tr><td colspan="5" class="empty-cell">Nothing pasted yet.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="bulk-paste-footer">
+          <button id="cancel-bulk-paste" type="button">Cancel</button>
+          <button id="apply-bulk-paste" class="primary" type="button" disabled>Apply entries</button>
+        </div>
+      </div>
+    </dialog>
 
     <script type="module" src="/src/main.js"></script>
   </body>
