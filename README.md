@@ -1,4 +1,20 @@
-# PDF Binder Tool — browser-only MVP v0.7.2
+# PDF Binder Tool — browser-only MVP v0.8.2
+
+
+## v0.8.2 metadata cleanup
+
+- Generated split PDFs, preserved tab PDFs, and rebuilt binders are created with pdf-lib automatic metadata updates disabled.
+- The output no longer intentionally includes pdf-lib in the PDF `Creator` or `Producer` fields.
+- Creation and modification timestamps are still written to generated PDFs.
+- Source PDFs are loaded with metadata updates disabled as well; source metadata is not used to brand the generated binder.
+
+## v0.8.1 usability update
+
+- Added **Next tab** in the Split PDF preview. It jumps to the next marked/detected tab divider and scrolls that thumbnail into view.
+- Compacted the desktop header, toolbar, panel headings, and current-section editor.
+- Made the split workspace use the available browser viewport height, so the PDF preview grows on larger screens instead of staying fixed at 500px.
+- The current section's Label, Description, Date, and Filename fit on one row on wider desktop screens.
+
 
 A client-side PDF workspace for splitting combined PDFs, extracting physical tab divider pages, editing a document manifest, rebuilding binders with positional tabs, and adding clickable links from a supplied index PDF to the final document contents.
 
@@ -28,7 +44,7 @@ Tabbed-binder behavior intentionally omits unmarked front matter before the firs
 
 Version 0.5 added a more complete editor layer:
 
-- Edit Label, Description, and Output Filename.
+- Edit Label, Description, Date, and Output Filename.
 - The preview pane shows the manifest fields for the currently selected output section.
 - Automatic filenames use the configurable template:
 
@@ -39,18 +55,20 @@ Version 0.5 added a more complete editor layer:
   - `{order:02}`
   - `{label}`
   - `{description}`
+  - `{date}`
   - `{startPage}`
   - `{endPage}`
   - `{original}`
 - Auto-generated filenames renumber when section order changes because a new split is inserted.
 - Manually editing an individual filename locks that filename. **Apply template to all** clears those manual locks.
 - Validation warns about blank descriptions, filename sanitization, unusually large sections, duplicate content filenames, and duplicate preserved-tab filenames. Duplicate filenames block splitting because they would collide inside the ZIP.
+- Auto-generated filenames are normalized for conservative Windows/macOS compatibility and capped at 120 characters including `.pdf`. Descriptions themselves are never shortened.
 
 ### Excel round trip
 
 The app can export the split manifest as `.xlsx` and import edited `.xlsx` or `.json` manifests.
 
-When a source PDF is already open, spreadsheet import updates the current sections by **Order** and applies Label, Description, and Filename. Spreadsheet edits to page/boundary columns do not alter source-PDF split points. This is deliberate: page extraction remains controlled by the visual markers in the app.
+When a source PDF is already open, spreadsheet import updates the current sections by **Order** and applies Label, Description, Date, and Filename. Spreadsheet edits to page/boundary columns do not alter source-PDF split points. This is deliberate: page extraction remains controlled by the visual markers in the app.
 
 The workbook includes a `Manifest` sheet and an `Instructions` sheet.
 
@@ -94,6 +112,20 @@ The Build Binder screen can now accept a separate index PDF that is inserted at 
 
 The Index & Links table previews the detected Description/Date text and shows which current binder position each index row will target. Reordering content PDFs updates those destinations automatically.
 
+
+## Paste Word index metadata (v0.8.0)
+
+The Split PDF manifest now includes **Paste Word index** for bulk naming. This is intended for the office's three-column Word index (`No.`, `Description`, `Date`).
+
+- Copy the table rows in Word, open **Paste Word index**, click the paste box, and use Ctrl+V/Cmd+V.
+- The browser reads the clipboard's HTML table structure when Word supplies it. If that is unavailable, it falls back to tab-delimited or numbered plain text.
+- The preview requires exactly one row numbered 1 through N for the N current output sections. Missing, duplicate, extra, or blank-description rows block **Apply entries**.
+- `Description` and `Date` populate the corresponding manifest fields. Positional tab labels remain `TAB 1`, `TAB 2`, etc.
+- By default, filenames are regenerated from the current filename template after the descriptions are applied. This can be unchecked if existing filenames should remain untouched.
+- The preview shows the proposed filename for each row and flags filenames that required cross-platform character replacement, Windows reserved-name handling, or truncation.
+- The app uses a conservative 120-character filename limit (including `.pdf`) even though common filesystems may permit longer names, reducing problems with longer folder paths, ZIP extraction, sync folders, and document-management systems.
+- Pasted descriptions are never truncated or sanitized; only filenames are modified.
+
 ## Libraries
 
 - PDF.js — browser PDF rendering and text extraction
@@ -123,12 +155,12 @@ The current JSON manifest identifies itself as:
 
 ```json
 {
-  "schema": "pdf-binder-tool/5",
+  "schema": "pdf-binder-tool/6",
   "tabSemantics": "position"
 }
 ```
 
-Each section records its source-page range, boundary type, label, description, filename, and whether the filename came from the template or was manually set.
+Each section records its source-page range, boundary type, label, description, date, filename, and whether the filename came from the template or was manually set.
 
 ## Suggested next increments
 

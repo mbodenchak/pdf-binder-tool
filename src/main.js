@@ -7,6 +7,17 @@ import * as XLSX from 'xlsx';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 
+async function createOutputPdfDocument() {
+  // pdf-lib normally writes its own Creator/Producer metadata when a new
+  // document is created. Disable that automatic metadata, while retaining
+  // ordinary creation/modification timestamps for the generated file.
+  const pdfDoc = await PDFDocument.create({ updateMetadata: false });
+  const now = new Date();
+  pdfDoc.setCreationDate(now);
+  pdfDoc.setModificationDate(now);
+  return pdfDoc;
+}
+
 const els = {
   modeTabs: [...document.querySelectorAll('.mode-tab')],
   splitMode: document.querySelector('#split-mode'),
@@ -1184,7 +1195,7 @@ async function splitAndDownload() {
   els.splitDownload.disabled = true;
   try {
     setSplitStatus('Preparing source PDF…');
-    const source = await PDFDocument.load(splitState.bytes.slice());
+    const source = await PDFDocument.load(splitState.bytes.slice(), { updateMetadata: false });
     const zip = new JSZip();
     const documentsFolder = zip.folder('documents');
     const tabsFolder = els.preserveTabPdfs.checked ? zip.folder('tabs') : null;
@@ -1193,7 +1204,7 @@ async function splitAndDownload() {
       const section = sections[i];
       setSplitStatus(`Creating document ${i + 1} of ${sections.length}: ${section.filename}`);
 
-      const output = await PDFDocument.create();
+      const output = await createOutputPdfDocument();
       const pages = await output.copyPages(source, section.pageIndexes);
       pages.forEach((page) => output.addPage(page));
       const bytes = await output.save();
@@ -1205,7 +1216,7 @@ async function splitAndDownload() {
       for (let i = 0; i < tabAssets.length; i += 1) {
         const tab = tabAssets[i];
         setSplitStatus(`Preserving tab divider ${i + 1} of ${tabAssets.length}: ${tab.filename}`);
-        const tabOutput = await PDFDocument.create();
+        const tabOutput = await createOutputPdfDocument();
         const [tabPage] = await tabOutput.copyPages(source, [tab.tabIndex]);
         tabOutput.addPage(tabPage);
         const tabBytes = await tabOutput.save();
@@ -2088,14 +2099,14 @@ function findDuplicateNames(names) {
 }
 
 async function appendPdfToOutput(output, file) {
-  const source = await PDFDocument.load(await file.arrayBuffer());
+  const source = await PDFDocument.load(await file.arrayBuffer(), { updateMetadata: false });
   const pages = await output.copyPages(source, source.getPageIndices());
   pages.forEach((page) => output.addPage(page));
   return pages.length;
 }
 
 async function appendIndexPdfToOutput(output, file) {
-  const source = await PDFDocument.load(await file.arrayBuffer());
+  const source = await PDFDocument.load(await file.arrayBuffer(), { updateMetadata: false });
   const pages = await output.copyPages(source, source.getPageIndices());
   let removedLinks = 0;
   pages.forEach((page) => {
@@ -2207,7 +2218,7 @@ async function buildAndDownload() {
 
   els.buildDownload.disabled = true;
   try {
-    const output = await PDFDocument.create();
+    const output = await createOutputPdfDocument();
     const bookmarks = [];
     const contentPageTargets = [];
     let indexPageStart = null;
