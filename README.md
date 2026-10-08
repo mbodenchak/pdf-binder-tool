@@ -1,12 +1,18 @@
-# PDF Binder Tool — browser-only MVP v0.9.0
+# PDF Binder Tool — browser-only MVP v0.9.1
 
+
+## v0.9.1 filename-placeholder cleanup
+
+- Imported filename/path descriptions now interpret the office-safe placeholders `^` → `:` and `_` → `/`.
+- Generated PDF filenames remain Windows/macOS-safe because the existing filename sanitizer converts those restored description characters when producing a filename.
+- Dotted date prefixes such as `26.05.15` are no longer mistaken for removable numeric ordering prefixes.
 
 ## v0.9.0 index/order workflow update
 
 - A supplied Build Binder index PDF now becomes the **first top-level bookmark**, always titled `INDEX`, pointing to the first index page with Fit Page. Positional TAB bookmarks follow it when tab bookmark generation is enabled.
 - The Split PDF bulk metadata dialog is now **Paste/import index** and accepts Word or Excel clipboard tables.
 - Two-column `Filename/Description | Date` tables are supported without an explicit number column. When numbering is absent, row order is treated as positions 1 through N and must still reconcile exactly with the current output-section count before Apply is enabled.
-- Two-column filename/path input is cleaned for the Description preview: surrounding quotes and folder paths are removed, `.pdf` is removed, underscores/carets become spaces, and a simple leading numeric filename prefix is removed. The preview remains the verification step before applying anything.
+- Two-column filename/path input is cleaned for the Description preview: surrounding quotes and folder paths are removed, `.pdf` is removed, `^` is restored to `:` and `_` is restored to `/`, and a simple leading numeric ordering prefix is removed. Dotted date prefixes such as `26.05.15` are preserved. The preview remains the verification step before applying anything.
 - The same bulk metadata dialog can directly import `.xlsx`, `.xls`, `.csv`, or `.tsv`; the first worksheet/table is used.
 - In Build Binder, the Order column is editable. Type a destination position (for example change item 40 to `13`) and press Enter or leave the field; that PDF moves to position 13 and the intervening PDFs shift automatically. Drag-and-drop and arrow controls remain available.
 

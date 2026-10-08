@@ -378,8 +378,14 @@ function descriptionFromFilenameOrPath(value) {
   let base = pieces[pieces.length - 1] || text;
   base = base.replace(/\.pdf$/i, '');
   base = base
-    .replace(/^\s*\d+\s*[-_.^]\s*/, '')
-    .replace(/[_^]+/g, ' ')
+    // Remove a simple ordering prefix such as "01 - " or "01_", but
+    // do not mistake a dotted date prefix such as "26.05.15" for ordering.
+    .replace(/^\s*\d+\s*(?:[-_^]\s*|\.(?!\d)\s*)/, '')
+    // Office filename convention: caret stands in for a colon and underscore
+    // stands in for a slash. Restore that punctuation in the Description only;
+    // generated filenames are sanitized separately for cross-platform safety.
+    .replace(/\^+/g, ':')
+    .replace(/_+/g, '/')
     .replace(/\s+/g, ' ')
     .trim();
   return base;
