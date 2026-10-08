@@ -203,3 +203,28 @@ td input { width: 100%; min-width: 130px; border: 1px solid #ccd4df; border-radi
   .bulk-paste-summary, .bulk-preview-wrap { margin-left: 16px; margin-right: 16px; }
   .bulk-paste-footer { padding-left: 16px; padding-right: 16px; }
 }
+
+/* v0.9.0: direct position editing + spreadsheet index import */
+.build-order-input {
+  width: 68px;
+  min-width: 68px;
+  max-width: 68px;
+  text-align: center;
+  font-weight: 800;
+  padding: 6px 5px;
+}
+.bulk-import-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 12px 22px 4px;
+  color: #687385;
+  font-size: .78rem;
+  line-height: 1.35;
+}
+.bulk-import-row > span { flex: 1 1 420px; }
+
+@media (max-width: 700px) {
+  .bulk-import-row { padding-left: 16px; padding-right: 16px; }
+}

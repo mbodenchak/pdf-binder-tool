@@ -106,7 +106,7 @@
                   Import manifest
                   <input id="import-split-manifest" type="file" accept="application/json,.json,.xlsx,.xls" hidden />
                 </label>
-                <button id="paste-index-names" disabled>Paste Word index</button>
+                <button id="paste-index-names" disabled>Paste/import index</button>
                 <button id="export-manifest-json" disabled>JSON</button>
                 <button id="export-manifest-csv" disabled>CSV</button>
                 <button id="export-manifest-xlsx" disabled>Excel</button>
@@ -189,7 +189,7 @@
             <div class="panel-heading manifest-heading">
               <div>
                 <h2>Index &amp; links</h2>
-                <p>Add the finished index PDF that should appear at the front of the binder. The app looks for numbered rows and makes the Description cell clickable, with row 1 pointing to the first content page after TAB 1, row 2 to the first content page after TAB 2, and so on.</p>
+                <p>Add the finished index PDF that should appear at the front of the binder. The app makes its first page the initial top-level bookmark named INDEX, then looks for numbered rows and makes the Description cell clickable, with row 1 pointing to the first content page after TAB 1, row 2 to the first content page after TAB 2, and so on.</p>
               </div>
               <span id="index-detection-summary" class="index-detection-summary">No index PDF loaded.</span>
             </div>
@@ -215,7 +215,7 @@
             <div class="panel-heading manifest-heading">
               <div>
                 <h2>Final binder order</h2>
-                <p>Drag content rows to reorder them. Tabs stay positional. When bookmark creation is enabled, each tab becomes a top-level bookmark in the finished binder; an existing bookmark title in the supplied tab PDF is used when available. Generated TAB bookmarks and index links open their destination using Fit Page.</p>
+                <p>Drag content rows to reorder them, or edit an Order number and press Enter to move that PDF directly to a new position. Tabs stay positional. A supplied index becomes the first bookmark named INDEX; when tab bookmark creation is enabled, each tab follows as a top-level bookmark. Generated bookmarks and index links open their destination using Fit Page.</p>
               </div>
               <div class="manifest-actions">
                 <button id="export-build-xlsx" disabled>Export order to Excel</button>
@@ -252,14 +252,22 @@
         <div class="bulk-paste-heading">
           <div>
             <p class="eyebrow">BULK METADATA</p>
-            <h2>Paste entries from a Word index</h2>
-            <p>Copy the index table in Word and paste it below. The app prefers the clipboard's table structure, then falls back to tab-delimited/plain text. Numbering must match the current output sections before anything can be applied.</p>
+            <h2>Paste or import index entries</h2>
+            <p>Paste a Word or Excel table, or import an Excel/CSV index file. Three-column No./Description/Date indexes are supported, as are two-column Filename/Date lists; when numbering is absent, row order becomes positions 1 through N. The preview must reconcile with the current output sections before anything can be applied.</p>
           </div>
           <button id="close-bulk-paste" class="dialog-close" type="button" aria-label="Close">×</button>
         </div>
 
-        <label class="paste-input-label" for="bulk-paste-input">Paste here</label>
-        <textarea id="bulk-paste-input" rows="7" placeholder="Click here, then press Ctrl+V or Cmd+V after copying the Word table."></textarea>
+        <div class="bulk-import-row">
+          <label class="compact-file-button">
+            Import Excel / CSV
+            <input id="bulk-index-file" type="file" accept=".xlsx,.xls,.csv,.tsv,text/csv,text/tab-separated-values" hidden />
+          </label>
+          <span>For a two-column sheet, use Filename/Description first and Date second. Full copied paths and common filename separators are cleaned for the Description preview.</span>
+        </div>
+
+        <label class="paste-input-label" for="bulk-paste-input">Or paste here</label>
+        <textarea id="bulk-paste-input" rows="7" placeholder="Paste a Word or Excel table here. Two-column Filename/Date lists do not need an explicit number column."></textarea>
         <div class="bulk-paste-options">
           <label class="inline-check">
             <input id="bulk-regenerate-filenames" type="checkbox" checked />

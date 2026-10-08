@@ -55,6 +55,7 @@ const els = {
   pasteIndexNames: document.querySelector('#paste-index-names'),
   bulkPasteDialog: document.querySelector('#bulk-paste-dialog'),
   bulkPasteInput: document.querySelector('#bulk-paste-input'),
+  bulkIndexFile: document.querySelector('#bulk-index-file'),
   bulkPasteSummary: document.querySelector('#bulk-paste-summary'),
   bulkPastePreview: document.querySelector('#bulk-paste-preview'),
   bulkRegenerateFilenames: document.querySelector('#bulk-regenerate-filenames'),
@@ -151,6 +152,7 @@ els.currentSectionFilename.addEventListener('input', () => updateCurrentSectionF
 els.pasteIndexNames.addEventListener('click', openBulkPasteDialog);
 els.bulkPasteInput.addEventListener('paste', handleBulkPasteEvent);
 els.bulkPasteInput.addEventListener('input', () => analyzeBulkPaste('', els.bulkPasteInput.value));
+els.bulkIndexFile.addEventListener('change', handleBulkIndexFile);
 els.bulkRegenerateFilenames.addEventListener('change', renderBulkPastePreview);
 els.applyBulkPaste.addEventListener('click', applyBulkPasteEntries);
 els.cancelBulkPaste.addEventListener('click', closeBulkPasteDialog);
@@ -244,9 +246,12 @@ function handleBulkPasteEvent(event) {
 function analyzeBulkPaste(html, text) {
   const htmlRows = html ? parseWordTableHtml(html) : [];
   const rows = htmlRows.length ? htmlRows : parsePlainIndexText(text);
-  const source = htmlRows.length ? 'Word/HTML table' : rows.length ? 'plain text' : '';
-  const analysis = validateBulkPasteRows(rows, getSections());
+  const source = htmlRows.length ? 'Word/Excel clipboard table' : rows.length ? 'plain text' : '';
+  applyBulkPasteAnalysis(rows, source);
+}
 
+function applyBulkPasteAnalysis(rows, source) {
+  const analysis = validateBulkPasteRows(rows, getSections());
   splitState.bulkPaste = {
     rows: analysis.rows,
     canApply: analysis.canApply,
@@ -256,19 +261,52 @@ function analyzeBulkPaste(html, text) {
   renderBulkPastePreview();
 }
 
+async function handleBulkIndexFile(event) {
+  const [file] = event.target.files;
+  if (!file) return;
+
+  try {
+    const lower = file.name.toLowerCase();
+    let workbook;
+    if (lower.endsWith('.xlsx') || lower.endsWith('.xls')) {
+      workbook = XLSX.read(await file.arrayBuffer(), { type: 'array' });
+    } else if (lower.endsWith('.csv') || lower.endsWith('.tsv')) {
+      const text = await file.text();
+      workbook = XLSX.read(text, { type: 'string', FS: lower.endsWith('.tsv') ? '\t' : ',' });
+    } else {
+      throw new Error('Use an Excel (.xlsx/.xls), CSV, or TSV index file.');
+    }
+
+    const sheet = workbook.Sheets[workbook.SheetNames[0]];
+    if (!sheet) throw new Error('The index file does not contain a readable worksheet.');
+    const cellRows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '', raw: false });
+    const rows = parseTabularIndexRows(cellRows);
+    if (!rows.length) throw new Error('No usable index rows were found in the first worksheet.');
+
+    els.bulkPasteInput.value = '';
+    applyBulkPasteAnalysis(rows, file.name);
+  } catch (error) {
+    console.error(error);
+    splitState.bulkPaste = { rows: [], canApply: false, source: '', issues: [friendlyError(error)] };
+    els.bulkPasteSummary.textContent = `Could not import index file: ${friendlyError(error)}`;
+    els.bulkPasteSummary.className = 'bulk-paste-summary error';
+    els.bulkPastePreview.innerHTML = '<tr><td colspan="5" class="empty-cell">No index entries imported.</td></tr>';
+    els.applyBulkPaste.disabled = true;
+  } finally {
+    event.target.value = '';
+  }
+}
+
 function parseWordTableHtml(html) {
   try {
     const doc = new DOMParser().parseFromString(html, 'text/html');
     const candidates = [...doc.querySelectorAll('table')].map((table) => {
-      const rows = [];
-      [...table.querySelectorAll('tr')].forEach((tr) => {
-        const cells = [...tr.children]
+      const cellRows = [...table.querySelectorAll('tr')].map((tr) => (
+        [...tr.children]
           .filter((node) => ['TD', 'TH'].includes(node.tagName))
-          .map(extractPastedCellText);
-        const parsed = rowFromCells(cells);
-        if (parsed) rows.push(parsed);
-      });
-      return rows;
+          .map(extractPastedCellText)
+      ));
+      return parseTabularIndexRows(cellRows);
     });
     candidates.sort((a, b) => b.length - a.length);
     return candidates[0] || [];
@@ -285,20 +323,66 @@ function extractPastedCellText(cell) {
   return normalizePastedCell(chunks.join(' '));
 }
 
-function rowFromCells(cells) {
+function parseTabularIndexRows(cellRows) {
+  const rows = [];
+  let inferredNumber = 1;
+
+  (cellRows || []).forEach((rawCells) => {
+    const cells = (rawCells || []).map(normalizePastedCell);
+    if (!cells.some(Boolean)) return;
+    const parsed = rowFromCells(cells, inferredNumber);
+    if (!parsed) return;
+    rows.push(parsed);
+    if (parsed.inferredNumber) inferredNumber += 1;
+    else inferredNumber = Math.max(inferredNumber, parsed.number + 1);
+  });
+
+  return rows;
+}
+
+function rowFromCells(cells, inferredNumber = null) {
   if (cells.length < 2) return null;
+
+  const normalizedHeaders = cells.map(normalizeHeader);
+  const firstHeader = normalizedHeaders[0] || '';
+  const obviousHeader = ['no', 'number', 'order', 'position', 'tab', 'description', 'filename', 'file', 'filepath', 'path', 'document', 'documentname'].includes(firstHeader)
+    || normalizedHeaders.some((header) => ['description', 'filename', 'documentdate'].includes(header));
+  if (obviousHeader && normalizedHeaders.some((header) => ['date', 'documentdate'].includes(header))) return null;
+
   const numberIndex = cells.findIndex((cell) => parsePastedRowNumber(cell) != null);
-  if (numberIndex < 0) return null;
+  if (numberIndex >= 0) {
+    const number = parsePastedRowNumber(cells[numberIndex]);
+    const trailing = cells.slice(numberIndex + 1);
+    if (!trailing.length) return null;
 
-  const number = parsePastedRowNumber(cells[numberIndex]);
-  const trailing = cells.slice(numberIndex + 1);
-  if (!trailing.length) return null;
+    const description = normalizePastedCell(trailing[0]);
+    const date = normalizePastedCell(trailing.length > 1 ? trailing[trailing.length - 1] : '');
+    if (!description || ['description', 'filename', 'document'].includes(normalizeHeader(description))) return null;
+    return { number, description, date, inferredNumber: false };
+  }
 
-  const description = normalizePastedCell(trailing[0]);
-  const date = normalizePastedCell(trailing.length > 1 ? trailing[trailing.length - 1] : '');
-  if (!description || normalizeHeader(description) === 'description') return null;
+  if (inferredNumber == null) return null;
+  if (['no', 'number', 'order', 'position', 'tab', 'description', 'filename', 'file', 'filepath', 'path', 'document', 'documentname'].includes(firstHeader)) return null;
 
-  return { number, description, date };
+  const description = descriptionFromFilenameOrPath(cells[0]);
+  const date = normalizePastedCell(cells.length > 1 ? cells[cells.length - 1] : '');
+  if (!description) return null;
+  return { number: inferredNumber, description, date, inferredNumber: true };
+}
+
+function descriptionFromFilenameOrPath(value) {
+  let text = normalizePastedCell(value);
+  if (!text) return '';
+  text = text.replace(/^['"]+|['"]+$/g, '').trim();
+  const pieces = text.split(/[\\/]/);
+  let base = pieces[pieces.length - 1] || text;
+  base = base.replace(/\.pdf$/i, '');
+  base = base
+    .replace(/^\s*\d+\s*[-_.^]\s*/, '')
+    .replace(/[_^]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return base;
 }
 
 function parsePlainIndexText(text) {
@@ -307,13 +391,11 @@ function parsePlainIndexText(text) {
 
   const lines = source.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
 
-  // First choice for plain clipboard text from Word tables: tab-separated cells.
-  const tabRows = [];
-  lines.forEach((line) => {
-    if (!line.includes('\t')) return;
-    const parsed = rowFromCells(line.split(/\t+/).map(normalizePastedCell));
-    if (parsed) tabRows.push(parsed);
-  });
+  // First choice for clipboard text from Word/Excel tables: tab-separated cells.
+  const tabCellRows = lines
+    .filter((line) => line.includes('\t'))
+    .map((line) => line.split(/\t+/).map(normalizePastedCell));
+  const tabRows = parseTabularIndexRows(tabCellRows);
   if (tabRows.length) return tabRows;
 
   // Fallback: group lines under explicit numbered entries. This also handles
@@ -345,6 +427,7 @@ function parsePlainIndexText(text) {
       number: group.number,
       description: normalizePastedCell(parts.join(' ')),
       date,
+      inferredNumber: false,
     };
   }).filter((row) => row.description);
 }
@@ -372,6 +455,7 @@ function validateBulkPasteRows(rows, sections) {
     number: Number(row.number),
     description: normalizePastedCell(row.description),
     date: normalizePastedCell(row.date),
+    inferredNumber: Boolean(row.inferredNumber),
   })).filter((row) => Number.isInteger(row.number) && row.number > 0);
 
   const issues = [];
@@ -416,7 +500,9 @@ function renderBulkPastePreview() {
   }
 
   if (canApply) {
-    els.bulkPasteSummary.textContent = `${rows.length} entries detected from ${source || 'clipboard text'}. Numbering matches all ${sections.length} current sections.`;
+    const inferred = rows.some((row) => row.inferredNumber);
+    const numberingNote = inferred ? ' Positions were inferred from row order.' : ' Explicit numbering matches the current sections.';
+    els.bulkPasteSummary.textContent = `${rows.length} entries detected from ${source || 'clipboard text'}.${numberingNote}`;
     els.bulkPasteSummary.className = 'bulk-paste-summary success';
   } else {
     els.bulkPasteSummary.textContent = issues.join(' ');
@@ -1972,7 +2058,7 @@ function renderBuildTable() {
     row.dataset.entryId = entry.id;
     row.innerHTML = `
       <td><span class="drag-handle" draggable="true" title="Drag to reorder" aria-label="Drag to reorder">☰</span></td>
-      <td>${index + 1}</td>
+      <td><input class="build-order-input" type="number" min="1" max="${buildState.entries.length}" value="${index + 1}" title="Type a new position and press Enter" aria-label="Content position" /></td>
       <td>${tabCell}</td>
       <td><input class="build-description-input" data-action="description" value="${escapeAttr(entry.description)}" /></td>
       <td>${escapeHtml(entry.file.name)}</td>
@@ -1985,6 +2071,21 @@ function renderBuildTable() {
       </td>
       <td><button type="button" class="remove-file" data-action="remove" aria-label="Remove content PDF">×</button></td>
     `;
+
+    const orderInput = row.querySelector('.build-order-input');
+    orderInput.addEventListener('focus', () => {
+      try { orderInput.select(); } catch { /* Number inputs may not expose text selection in every browser. */ }
+    });
+    orderInput.addEventListener('change', () => moveBuildEntryToPosition(entry.id, orderInput.value));
+    orderInput.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        moveBuildEntryToPosition(entry.id, orderInput.value);
+      } else if (event.key === 'Escape') {
+        orderInput.value = String(index + 1);
+        orderInput.blur();
+      }
+    });
 
     row.querySelector('[data-action="description"]').addEventListener('input', (event) => {
       entry.description = event.target.value;
@@ -2040,6 +2141,24 @@ function reorderBuildEntry(draggedId, targetId) {
   updateBuildStatusSummary();
 }
 
+function moveBuildEntryToPosition(entryId, requestedPosition) {
+  const from = buildState.entries.findIndex((entry) => entry.id === entryId);
+  if (from < 0 || !buildState.entries.length) return;
+
+  const parsed = Number.parseInt(String(requestedPosition), 10);
+  const position = Math.min(buildState.entries.length, Math.max(1, Number.isFinite(parsed) ? parsed : from + 1));
+  const to = position - 1;
+  if (from === to) {
+    renderBuildTable();
+    return;
+  }
+
+  const [entry] = buildState.entries.splice(from, 1);
+  buildState.entries.splice(to, 0, entry);
+  renderBuildTable();
+  updateBuildStatusSummary();
+}
+
 function moveBuildEntry(index, delta) {
   const target = index + delta;
   if (target < 0 || target >= buildState.entries.length) return;
@@ -2073,20 +2192,21 @@ function updateBuildStatusSummary() {
     : '';
 
   if (!els.insertBuildTabs.checked) {
-    setBuildStatus(`${contentCount} content PDF${contentCount === 1 ? '' : 's'} loaded. Positional tab insertion is off.${indexNote}${duplicateNote}`, duplicateNames.length ? 'error' : '');
+    setBuildStatus(`${contentCount} content PDF${contentCount === 1 ? '' : 's'} loaded. Positional tab insertion is off.${buildState.indexFile ? ' The index will be the first top-level bookmark named INDEX.' : ''}${indexNote}${duplicateNote}`, duplicateNames.length ? 'error' : '');
     return;
   }
 
   if (tabCount < contentCount) {
     const missing = contentCount - tabCount;
-    setBuildStatus(`${contentCount} content PDF${contentCount === 1 ? '' : 's'} and ${tabCount} tab PDF${tabCount === 1 ? '' : 's'} loaded. Add ${missing} more tab PDF${missing === 1 ? '' : 's'} or turn off tab insertion.${indexNote}${duplicateNote}`, 'error');
+    setBuildStatus(`${contentCount} content PDF${contentCount === 1 ? '' : 's'} and ${tabCount} tab PDF${tabCount === 1 ? '' : 's'} loaded. Add ${missing} more tab PDF${missing === 1 ? '' : 's'} or turn off tab insertion.${buildState.indexFile ? ' The index will be the first top-level bookmark named INDEX.' : ''}${indexNote}${duplicateNote}`, 'error');
     return;
   }
 
   const extra = tabCount - contentCount;
   const extraNote = extra ? ` ${extra} extra tab PDF${extra === 1 ? '' : 's'} will not be used.` : '';
-  const bookmarkNote = els.createBuildBookmarks.checked ? ` ${contentCount} top-level tab bookmark${contentCount === 1 ? '' : 's'} will be created.` : '';
-  setBuildStatus(`${contentCount} content PDF${contentCount === 1 ? '' : 's'} will be paired with the first ${contentCount} positional tab PDF${contentCount === 1 ? '' : 's'}.${bookmarkNote}${indexNote}${extraNote}${duplicateNote}`, duplicateNames.length ? 'error' : 'success');
+  const indexBookmarkNote = buildState.indexFile ? ' The index will be the first top-level bookmark named INDEX.' : '';
+  const bookmarkNote = els.createBuildBookmarks.checked ? ` ${contentCount} positional tab bookmark${contentCount === 1 ? '' : 's'} will follow.` : '';
+  setBuildStatus(`${contentCount} content PDF${contentCount === 1 ? '' : 's'} will be paired with the first ${contentCount} positional tab PDF${contentCount === 1 ? '' : 's'}.${indexBookmarkNote}${bookmarkNote}${indexNote}${extraNote}${duplicateNote}`, duplicateNames.length ? 'error' : 'success');
 }
 
 function findDuplicateNames(names) {
@@ -2232,6 +2352,7 @@ async function buildAndDownload() {
       const indexResult = await appendIndexPdfToOutput(output, buildState.indexFile);
       indexPageCount = indexResult.pageCount;
       oldIndexLinksRemoved = indexResult.removedLinks;
+      bookmarks.push({ title: 'INDEX', pageIndex: indexPageStart });
     }
 
     for (let i = 0; i < buildState.entries.length; i += 1) {
@@ -2268,7 +2389,7 @@ async function buildAndDownload() {
     }
 
     if (bookmarks.length) {
-      setBuildStatus(`Creating ${bookmarks.length} tab bookmark${bookmarks.length === 1 ? '' : 's'}…`);
+      setBuildStatus(`Creating ${bookmarks.length} top-level bookmark${bookmarks.length === 1 ? '' : 's'}…`);
       addTopLevelBookmarks(output, bookmarks);
     }
 
@@ -2318,6 +2439,7 @@ function exportBuildXlsx() {
     ['Tabs inserted', els.insertBuildTabs.checked ? 'Yes' : 'No'],
     ['Tab bookmarks created', els.insertBuildTabs.checked && els.createBuildBookmarks.checked ? 'Yes' : 'No'],
     ['Index PDF', buildState.indexFile?.name || ''],
+    ['INDEX bookmark created', buildState.indexFile ? 'Yes' : 'No'],
     ['Index pages', buildState.indexInfo?.pageCount || ''],
     ['Index Description links created', buildState.indexFile && els.createIndexLinks.checked ? 'Yes' : 'No'],
     ['Detected index rows', buildState.indexInfo?.rows?.length || ''],

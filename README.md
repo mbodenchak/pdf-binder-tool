@@ -1,4 +1,14 @@
-# PDF Binder Tool — browser-only MVP v0.8.2
+# PDF Binder Tool — browser-only MVP v0.9.0
+
+
+## v0.9.0 index/order workflow update
+
+- A supplied Build Binder index PDF now becomes the **first top-level bookmark**, always titled `INDEX`, pointing to the first index page with Fit Page. Positional TAB bookmarks follow it when tab bookmark generation is enabled.
+- The Split PDF bulk metadata dialog is now **Paste/import index** and accepts Word or Excel clipboard tables.
+- Two-column `Filename/Description | Date` tables are supported without an explicit number column. When numbering is absent, row order is treated as positions 1 through N and must still reconcile exactly with the current output-section count before Apply is enabled.
+- Two-column filename/path input is cleaned for the Description preview: surrounding quotes and folder paths are removed, `.pdf` is removed, underscores/carets become spaces, and a simple leading numeric filename prefix is removed. The preview remains the verification step before applying anything.
+- The same bulk metadata dialog can directly import `.xlsx`, `.xls`, `.csv`, or `.tsv`; the first worksheet/table is used.
+- In Build Binder, the Order column is editable. Type a destination position (for example change item 40 to `13`) and press Enter or leave the field; that PDF moves to position 13 and the intervening PDFs shift automatically. Drag-and-drop and arrow controls remain available.
 
 
 ## v0.8.2 metadata cleanup
@@ -113,13 +123,13 @@ The Build Binder screen can now accept a separate index PDF that is inserted at 
 The Index & Links table previews the detected Description/Date text and shows which current binder position each index row will target. Reordering content PDFs updates those destinations automatically.
 
 
-## Paste Word index metadata (v0.8.0)
+## Paste/import index metadata (expanded in v0.9.0)
 
-The Split PDF manifest now includes **Paste Word index** for bulk naming. This is intended for the office's three-column Word index (`No.`, `Description`, `Date`).
+The Split PDF manifest includes **Paste/import index** for bulk naming. It supports the office's three-column Word index (`No.`, `Description`, `Date`) and simpler two-column Excel lists (`Filename/Description`, `Date`).
 
-- Copy the table rows in Word, open **Paste Word index**, click the paste box, and use Ctrl+V/Cmd+V.
+- Copy table rows in Word or Excel, open **Paste/import index**, click the paste box, and use Ctrl+V/Cmd+V; or import an Excel/CSV/TSV file directly.
 - The browser reads the clipboard's HTML table structure when Word supplies it. If that is unavailable, it falls back to tab-delimited or numbered plain text.
-- The preview requires exactly one row numbered 1 through N for the N current output sections. Missing, duplicate, extra, or blank-description rows block **Apply entries**.
+- Explicit numbering is validated when present. For two-column lists without numbers, positions 1 through N are inferred from row order. In either case, the preview must reconcile exactly with the N current output sections; missing, duplicate, extra, or blank-description rows block **Apply entries**.
 - `Description` and `Date` populate the corresponding manifest fields. Positional tab labels remain `TAB 1`, `TAB 2`, etc.
 - By default, filenames are regenerated from the current filename template after the descriptions are applied. This can be unchecked if existing filenames should remain untouched.
 - The preview shows the proposed filename for each row and flags filenames that required cross-platform character replacement, Windows reserved-name handling, or truncation.
