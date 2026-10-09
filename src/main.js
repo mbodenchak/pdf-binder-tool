@@ -22,6 +22,7 @@ const els = {
   modeTabs: [...document.querySelectorAll('.mode-tab')],
   splitMode: document.querySelector('#split-mode'),
   buildMode: document.querySelector('#build-mode'),
+  insertMode: document.querySelector('#insert-mode'),
 
   binderInput: document.querySelector('#binder-input'),
   detectTabs: document.querySelector('#detect-tabs'),
@@ -79,6 +80,20 @@ const els = {
   buildStatus: document.querySelector('#build-status'),
   buildBody: document.querySelector('#build-body'),
   exportBuildXlsx: document.querySelector('#export-build-xlsx'),
+
+  insertBinder: document.querySelector('#insert-binder'),
+  insertFiles: document.querySelector('#insert-files'),
+  insertTabs: document.querySelector('#insert-tabs'),
+  clearInsertTabs: document.querySelector('#clear-insert-tabs'),
+  insertCreateBookmarks: document.querySelector('#insert-create-bookmarks'),
+  insertRefreshIndexLinks: document.querySelector('#insert-refresh-index-links'),
+  insertOutputName: document.querySelector('#insert-output-name'),
+  insertDownload: document.querySelector('#insert-download'),
+  insertStatus: document.querySelector('#insert-status'),
+  insertAnalysisSummary: document.querySelector('#insert-analysis-summary'),
+  insertStructureNote: document.querySelector('#insert-structure-note'),
+  insertOperationsBody: document.querySelector('#insert-operations-body'),
+  insertPreviewBody: document.querySelector('#insert-preview-body'),
 };
 
 const splitState = {
@@ -105,12 +120,27 @@ const buildState = {
   indexLoading: false,
 };
 
+const insertState = {
+  file: null,
+  bytes: null,
+  pageCount: 0,
+  frontMatterPageIndexes: [],
+  sourceTabs: [],
+  sourceSections: [],
+  indexRows: [],
+  operations: [],
+  extraTabs: [],
+  analyzing: false,
+  error: null,
+};
+
 els.modeTabs.forEach((tab) => {
   tab.addEventListener('click', () => {
     const mode = tab.dataset.mode;
     els.modeTabs.forEach((item) => item.classList.toggle('active', item === tab));
     els.splitMode.classList.toggle('active', mode === 'split');
     els.buildMode.classList.toggle('active', mode === 'build');
+    els.insertMode.classList.toggle('active', mode === 'insert');
   });
 });
 
@@ -201,6 +231,27 @@ els.createIndexLinks.addEventListener('change', () => {
 els.buildManifest.addEventListener('change', importBuildManifest);
 els.buildDownload.addEventListener('click', buildAndDownload);
 els.exportBuildXlsx.addEventListener('click', exportBuildXlsx);
+
+els.insertBinder.addEventListener('change', async (event) => {
+  const [file] = event.target.files;
+  if (file) await loadInsertBinder(file);
+  event.target.value = '';
+});
+els.insertFiles.addEventListener('change', (event) => {
+  addInsertOperations([...event.target.files]);
+  event.target.value = '';
+});
+els.insertTabs.addEventListener('change', async (event) => {
+  await addInsertExtraTabs([...event.target.files]);
+  event.target.value = '';
+});
+els.clearInsertTabs.addEventListener('click', () => {
+  insertState.extraTabs = [];
+  renderInsertWorkspace();
+});
+els.insertCreateBookmarks.addEventListener('change', renderInsertWorkspace);
+els.insertRefreshIndexLinks.addEventListener('change', renderInsertWorkspace);
+els.insertDownload.addEventListener('click', buildInsertedBinder);
 
 
 const SAFE_FILENAME_MAX_LENGTH = 120;
@@ -2455,6 +2506,575 @@ function exportBuildXlsx() {
 
   const bytes = XLSX.write(workbook, { type: 'array', bookType: 'xlsx' });
   downloadBlob(new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), 'final-binder-order.xlsx');
+}
+
+
+
+// ---------------------------------------------------------------------------
+// Insert Documents workflow (v0.10.0)
+// ---------------------------------------------------------------------------
+
+async function loadInsertBinder(file) {
+  if (!isPdfFile(file)) {
+    setInsertStatus('The existing binder must be a PDF file.', 'error');
+    return;
+  }
+
+  insertState.file = file;
+  insertState.bytes = null;
+  insertState.pageCount = 0;
+  insertState.frontMatterPageIndexes = [];
+  insertState.sourceTabs = [];
+  insertState.sourceSections = [];
+  insertState.indexRows = [];
+  insertState.operations = [];
+  insertState.analyzing = true;
+  insertState.error = null;
+  renderInsertWorkspace();
+  setInsertStatus(`Analyzing ${file.name} for positional TAB pages…`);
+
+  let loadingTask = null;
+  try {
+    insertState.bytes = new Uint8Array(await file.arrayBuffer());
+    loadingTask = pdfjsLib.getDocument({ data: insertState.bytes.slice() });
+    const pdf = await loadingTask.promise;
+    insertState.pageCount = pdf.numPages;
+
+    const pattern = /\bTAB\s*(?:NO\.?\s*)?[:#\-–—]?\s*([A-Z]|\d{1,3})\b/i;
+    const tabs = [];
+
+    for (let pageIndex = 0; pageIndex < pdf.numPages; pageIndex += 1) {
+      setInsertStatus(`Analyzing page ${pageIndex + 1} of ${pdf.numPages}…`);
+      const page = await pdf.getPage(pageIndex + 1);
+      const content = await page.getTextContent();
+      const text = content.items.map((item) => item.str).join(' ').replace(/\s+/g, ' ').trim();
+      const match = text.slice(0, 1800).match(pattern);
+      if (match) {
+        const token = String(match[1]).toUpperCase();
+        tabs.push({
+          pageIndex,
+          label: `TAB ${token}`,
+          detectedNumber: /^\d+$/.test(token) ? Number(token) : null,
+        });
+      }
+    }
+
+    if (!tabs.length) throw new Error('No TAB divider pages were detected. Use Split PDF / Build Binder for this document, or verify that the tab labels contain extractable text.');
+
+    tabs.sort((a, b) => a.pageIndex - b.pageIndex);
+    insertState.sourceTabs = tabs.map((tab, index) => ({ ...tab, position: index + 1 }));
+    insertState.frontMatterPageIndexes = Array.from({ length: tabs[0].pageIndex }, (_, index) => index);
+    insertState.sourceSections = tabs.map((tab, index) => {
+      const nextTab = tabs[index + 1];
+      const startPageIndex = tab.pageIndex + 1;
+      const endPageIndex = nextTab ? nextTab.pageIndex - 1 : pdf.numPages - 1;
+      const pageIndexes = endPageIndex >= startPageIndex
+        ? Array.from({ length: endPageIndex - startPageIndex + 1 }, (_, offset) => startPageIndex + offset)
+        : [];
+      return {
+        originalPosition: index + 1,
+        tabPageIndex: tab.pageIndex,
+        tabLabel: tab.label,
+        pageIndexes,
+      };
+    });
+
+    const rows = [];
+    for (const pageIndex of insertState.frontMatterPageIndexes) {
+      const page = await pdf.getPage(pageIndex + 1);
+      const pageRows = await detectIndexRowsOnPage(page, pageIndex);
+      rows.push(...pageRows);
+    }
+    rows.sort((a, b) => a.number - b.number || a.pageIndex - b.pageIndex || b.rect[3] - a.rect[3]);
+    insertState.indexRows = rows;
+  } catch (error) {
+    console.error(error);
+    insertState.error = friendlyError(error);
+    setInsertStatus(`Could not analyze the binder: ${friendlyError(error)}`, 'error');
+  } finally {
+    if (loadingTask) {
+      try {
+        await loadingTask.destroy();
+      } catch (cleanupError) {
+        console.warn(`Could not fully release PDF.js resources for ${file.name}.`, cleanupError);
+      }
+    }
+    insertState.analyzing = false;
+    renderInsertWorkspace();
+  }
+}
+
+function addInsertOperations(files) {
+  const pdfs = files.filter(isPdfFile);
+  if (!pdfs.length) return;
+
+  let insertionCount = insertState.operations.filter((operation) => operation.action === 'insert').length;
+  pdfs.forEach((file) => {
+    insertionCount += 1;
+    const baseCount = insertState.sourceSections.length;
+    insertState.operations.push({
+      id: makeId(),
+      file,
+      description: humanizeFilename(file.name),
+      action: 'insert',
+      position: Math.max(1, baseCount + insertionCount),
+    });
+  });
+  renderInsertWorkspace();
+}
+
+async function addInsertExtraTabs(files) {
+  const pdfs = files.filter(isPdfFile);
+  if (!pdfs.length) return;
+
+  const entries = pdfs.map((file) => ({
+    id: makeId(),
+    file,
+    tabNumber: parseTabNumberFromText(file.name),
+    bookmarkTitle: fallbackBookmarkTitle(file.name),
+    bookmarkSource: 'filename',
+    bookmarkStatus: 'reading',
+  }));
+  insertState.extraTabs.push(...entries);
+  sortInsertExtraTabs();
+  renderInsertWorkspace();
+
+  await Promise.all(entries.map(readTabBookmarkTitle));
+  entries.forEach((entry) => {
+    if (entry.tabNumber == null) entry.tabNumber = parseTabNumberFromText(entry.bookmarkTitle);
+  });
+  sortInsertExtraTabs();
+  renderInsertWorkspace();
+}
+
+function parseTabNumberFromText(value) {
+  const text = stripExtension(String(value || ''));
+  const tabMatch = text.match(/\bTAB\s*(?:NO\.?\s*)?[:#\-–—]?\s*(\d{1,3})\b/i);
+  if (tabMatch) return Number(tabMatch[1]);
+  const leading = text.match(/^\s*(\d{1,3})\b/);
+  return leading ? Number(leading[1]) : null;
+}
+
+function sortInsertExtraTabs() {
+  insertState.extraTabs.sort((a, b) => {
+    if (a.tabNumber != null && b.tabNumber != null && a.tabNumber !== b.tabNumber) return a.tabNumber - b.tabNumber;
+    if (a.tabNumber != null && b.tabNumber == null) return -1;
+    if (a.tabNumber == null && b.tabNumber != null) return 1;
+    return naturalCompare(a.file.name, b.file.name);
+  });
+}
+
+function getInsertIndexDescription(position) {
+  const matches = insertState.indexRows.filter((row) => row.number === position);
+  return matches.length === 1 ? matches[0].description : '';
+}
+
+function getInsertPlan() {
+  const baseItems = insertState.sourceSections.map((section) => ({
+    kind: 'existing',
+    originalPosition: section.originalPosition,
+    sourceSection: section,
+    description: getInsertIndexDescription(section.originalPosition) || `Existing ${section.tabLabel} content`,
+    change: '',
+  }));
+
+  const issues = [];
+  const operations = insertState.operations.map((operation) => ({
+    ...operation,
+    position: Number.parseInt(String(operation.position), 10),
+  }));
+  const inserts = operations.filter((operation) => operation.action === 'insert');
+  const replacements = operations.filter((operation) => operation.action === 'replace');
+  const finalCount = baseItems.length + inserts.length;
+
+  const targetGroups = new Map();
+  operations.forEach((operation) => {
+    if (!Number.isInteger(operation.position)) {
+      issues.push(`${operation.file.name}: enter a valid final position.`);
+      return;
+    }
+    if (!targetGroups.has(operation.position)) targetGroups.set(operation.position, []);
+    targetGroups.get(operation.position).push(operation);
+  });
+  targetGroups.forEach((group, position) => {
+    if (group.length > 1) issues.push(`Final position ${position} is assigned to more than one new PDF.`);
+  });
+
+  inserts.forEach((operation) => {
+    if (!Number.isInteger(operation.position) || operation.position < 1 || operation.position > finalCount) {
+      issues.push(`${operation.file.name}: Insert & shift position must be between 1 and ${Math.max(1, finalCount)}.`);
+    }
+  });
+  replacements.forEach((operation) => {
+    if (!Number.isInteger(operation.position) || operation.position < 1 || operation.position > finalCount) {
+      issues.push(`${operation.file.name}: Replace position must be between 1 and ${Math.max(1, finalCount)}.`);
+    }
+  });
+
+  const items = [...baseItems];
+  if (!issues.length) {
+    [...inserts].sort((a, b) => a.position - b.position).forEach((operation) => {
+      items.splice(operation.position - 1, 0, {
+        kind: 'new',
+        operation,
+        description: operation.description || humanizeFilename(operation.file.name),
+        change: 'insert',
+      });
+    });
+
+    [...replacements].sort((a, b) => a.position - b.position).forEach((operation) => {
+      const replaced = items[operation.position - 1];
+      items[operation.position - 1] = {
+        kind: 'new',
+        operation,
+        description: operation.description || humanizeFilename(operation.file.name),
+        change: 'replace',
+        replaced,
+      };
+    });
+  }
+
+  return { items, operations, inserts, replacements, finalCount, issues };
+}
+
+function getExtraTabForPosition(position) {
+  const matches = insertState.extraTabs.filter((tab) => tab.tabNumber === position);
+  if (matches.length === 1) return { tab: matches[0], duplicate: false };
+  if (matches.length > 1) return { tab: matches[0], duplicate: true };
+  return { tab: null, duplicate: false };
+}
+
+function getTabAssetForInsertPosition(position) {
+  const sourceTab = insertState.sourceTabs[position - 1];
+  if (sourceTab) return { kind: 'source', label: sourceTab.label, sourceTab };
+  const extra = getExtraTabForPosition(position);
+  if (extra.tab) return { kind: 'extra', label: extra.tab.bookmarkTitle || `TAB ${position}`, extraTab: extra.tab, duplicate: extra.duplicate };
+  return { kind: 'missing', label: `TAB ${position}` };
+}
+
+function validateInsertPlan(plan = getInsertPlan()) {
+  const errors = [...plan.issues];
+  const warnings = [];
+
+  if (insertState.analyzing) errors.push('Binder analysis is still running.');
+  if (insertState.error) errors.push(insertState.error);
+  if (!insertState.file) errors.push('Open an existing binder.');
+  if (insertState.file && !insertState.sourceTabs.length && !insertState.analyzing) errors.push('No positional TAB pages were detected.');
+  if (!insertState.operations.length) errors.push('Add at least one PDF to insert or replace.');
+
+  if (!plan.issues.length) {
+    for (let position = 1; position <= plan.items.length; position += 1) {
+      const asset = getTabAssetForInsertPosition(position);
+      if (asset.kind === 'missing') errors.push(`TAB ${position} is required but no source or extra tab PDF is available.`);
+      if (asset.duplicate) errors.push(`More than one extra tab PDF maps to TAB ${position}. Keep only one.`);
+    }
+  }
+
+  const numericMismatches = insertState.sourceTabs.filter((tab) => tab.detectedNumber != null && tab.detectedNumber !== tab.position);
+  if (numericMismatches.length) {
+    warnings.push(`Detected ${numericMismatches.length} source tab label${numericMismatches.length === 1 ? '' : 's'} whose printed number does not match its positional order.`);
+  }
+
+  const indexCheck = getInsertIndexLinkState(plan.items.length);
+  if (insertState.indexRows.length && !indexCheck.canRefresh) {
+    warnings.push(`The existing index has ${insertState.indexRows.length} detected row${insertState.indexRows.length === 1 ? '' : 's'}, but the finished binder has ${plan.items.length} position${plan.items.length === 1 ? '' : 's'}. Its old links will be removed, not guessed.`);
+  } else if (indexCheck.canRefresh && plan.replacements.length) {
+    warnings.push('Index links can be refreshed, but replacement documents may make the visible index description/date stale. Review the index text before final use.');
+  }
+
+  return { ok: errors.length === 0, errors, warnings, indexCheck };
+}
+
+function getInsertIndexLinkState(finalCount) {
+  const rows = insertState.indexRows || [];
+  if (!rows.length || !finalCount) return { canRefresh: false, reason: 'No index rows detected.' };
+  const counts = new Map();
+  rows.forEach((row) => counts.set(row.number, (counts.get(row.number) || 0) + 1));
+  if ([...counts.values()].some((count) => count !== 1)) return { canRefresh: false, reason: 'Duplicate index row numbers were detected.' };
+  if (rows.length !== finalCount) return { canRefresh: false, reason: 'Index row count does not match final binder positions.' };
+  for (let number = 1; number <= finalCount; number += 1) {
+    if (!counts.has(number)) return { canRefresh: false, reason: `Index row ${number} is missing.` };
+  }
+  return { canRefresh: true, reason: '' };
+}
+
+function renderInsertWorkspace() {
+  els.clearInsertTabs.disabled = insertState.extraTabs.length === 0;
+
+  if (!insertState.file) {
+    els.insertAnalysisSummary.textContent = 'No binder loaded.';
+    els.insertAnalysisSummary.className = 'index-detection-summary';
+    els.insertStructureNote.textContent = insertState.extraTabs.length
+      ? `${insertState.extraTabs.length} extra tab PDF${insertState.extraTabs.length === 1 ? '' : 's'} loaded; open a binder to use them.`
+      : 'Load a binder to detect its tab positions.';
+  } else if (insertState.analyzing) {
+    els.insertAnalysisSummary.textContent = `Analyzing ${insertState.file.name}…`;
+    els.insertAnalysisSummary.className = 'index-detection-summary';
+    els.insertStructureNote.textContent = 'Reading page text to locate physical TAB dividers and inspect front-matter index rows.';
+  } else if (insertState.error) {
+    els.insertAnalysisSummary.textContent = `Could not analyze ${insertState.file.name}.`;
+    els.insertAnalysisSummary.className = 'index-detection-summary error';
+    els.insertStructureNote.textContent = insertState.error;
+  } else {
+    const indexNote = insertState.indexRows.length
+      ? `${insertState.indexRows.length} numbered index row${insertState.indexRows.length === 1 ? '' : 's'} detected in front matter.`
+      : 'No numbered index rows detected in front matter.';
+    const extraNote = insertState.extraTabs.length
+      ? ` ${insertState.extraTabs.length} extra tab PDF${insertState.extraTabs.length === 1 ? '' : 's'} loaded.`
+      : '';
+    els.insertAnalysisSummary.textContent = `${insertState.file.name} — ${insertState.pageCount} pages, ${insertState.sourceTabs.length} TAB position${insertState.sourceTabs.length === 1 ? '' : 's'}.`;
+    els.insertAnalysisSummary.className = 'index-detection-summary success';
+    els.insertStructureNote.textContent = `${insertState.frontMatterPageIndexes.length} front-matter page${insertState.frontMatterPageIndexes.length === 1 ? '' : 's'} will be preserved. ${indexNote}${extraNote}`;
+  }
+
+  renderInsertOperationsTable();
+  const plan = getInsertPlan();
+  const validation = validateInsertPlan(plan);
+  renderInsertPreviewTable(plan);
+
+  els.insertRefreshIndexLinks.disabled = !validation.indexCheck.canRefresh;
+  const refreshWillRun = validation.indexCheck.canRefresh && els.insertRefreshIndexLinks.checked;
+  els.insertDownload.disabled = !validation.ok;
+
+  if (insertState.analyzing) return;
+  if (!insertState.file) {
+    setInsertStatus('Open an existing tabbed binder to begin.');
+    return;
+  }
+  if (validation.errors.length) {
+    setInsertStatus(validation.errors[0], 'error');
+    return;
+  }
+
+  const insertCount = plan.inserts.length;
+  const replaceCount = plan.replacements.length;
+  const changes = [];
+  if (insertCount) changes.push(`${insertCount} insert-and-shift operation${insertCount === 1 ? '' : 's'}`);
+  if (replaceCount) changes.push(`${replaceCount} replacement${replaceCount === 1 ? '' : 's'}`);
+  const indexPhrase = insertState.indexRows.length
+    ? refreshWillRun
+      ? ' Existing index links will be regenerated to the final content pages.'
+      : ' Existing detected index links will be removed because they cannot be safely mapped.'
+    : '';
+  const warningPhrase = validation.warnings.length ? ` Warning: ${validation.warnings[0]}` : '';
+  setInsertStatus(`${plan.items.length} final position${plan.items.length === 1 ? '' : 's'} from ${changes.join(' and ')}.${indexPhrase}${warningPhrase}`, validation.warnings.length ? '' : 'success');
+}
+
+function renderInsertOperationsTable() {
+  if (!insertState.operations.length) {
+    els.insertOperationsBody.innerHTML = '<tr><td colspan="5" class="empty-cell">Add one or more PDFs to create insertion/replacement operations.</td></tr>';
+    return;
+  }
+
+  const potentialFinalCount = insertState.sourceSections.length + insertState.operations.filter((operation) => operation.action === 'insert').length;
+  els.insertOperationsBody.innerHTML = '';
+  insertState.operations.forEach((operation) => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td><strong>${escapeHtml(operation.file.name)}</strong><span class="tab-bookmark">${formatBytes(operation.file.size)}</span></td>
+      <td><input data-action="description" value="${escapeAttr(operation.description)}" /></td>
+      <td><input class="insert-position-input" data-action="position" type="number" min="1" max="${Math.max(1, potentialFinalCount)}" value="${escapeAttr(operation.position)}" /></td>
+      <td>
+        <select data-action="operation">
+          <option value="insert" ${operation.action === 'insert' ? 'selected' : ''}>Insert &amp; shift</option>
+          <option value="replace" ${operation.action === 'replace' ? 'selected' : ''}>Replace</option>
+        </select>
+      </td>
+      <td><button type="button" class="remove-file" data-action="remove" aria-label="Remove operation">×</button></td>
+    `;
+    tr.querySelector('[data-action="description"]').addEventListener('change', (event) => {
+      operation.description = event.target.value;
+      renderInsertWorkspace();
+    });
+    tr.querySelector('[data-action="position"]').addEventListener('change', (event) => {
+      operation.position = Number.parseInt(event.target.value, 10);
+      renderInsertWorkspace();
+    });
+    tr.querySelector('[data-action="operation"]').addEventListener('change', (event) => {
+      operation.action = event.target.value;
+      const plan = getInsertPlan();
+      if (operation.action === 'replace' && operation.position > Math.max(1, plan.finalCount)) operation.position = Math.max(1, plan.finalCount);
+      renderInsertWorkspace();
+    });
+    tr.querySelector('[data-action="remove"]').addEventListener('click', () => {
+      insertState.operations = insertState.operations.filter((candidate) => candidate.id !== operation.id);
+      renderInsertWorkspace();
+    });
+    els.insertOperationsBody.append(tr);
+  });
+}
+
+function renderInsertPreviewTable(plan = getInsertPlan()) {
+  if (!insertState.sourceSections.length) {
+    els.insertPreviewBody.innerHTML = '<tr><td colspan="4" class="empty-cell">Open a binder to preview its existing positions.</td></tr>';
+    return;
+  }
+  if (plan.issues.length) {
+    els.insertPreviewBody.innerHTML = `<tr><td colspan="4" class="empty-cell">${escapeHtml(plan.issues[0])}</td></tr>`;
+    return;
+  }
+
+  els.insertPreviewBody.innerHTML = '';
+  plan.items.forEach((item, index) => {
+    const position = index + 1;
+    const asset = getTabAssetForInsertPosition(position);
+    const tabText = asset.kind === 'source'
+      ? `${asset.sourceTab.label} — binder page ${asset.sourceTab.pageIndex + 1}`
+      : asset.kind === 'extra'
+        ? `${asset.extraTab.file.name} — extra PDF${asset.duplicate ? ' (duplicate mapping)' : ''}`
+        : `TAB ${position} — MISSING`;
+    const sourceText = item.kind === 'existing'
+      ? (() => {
+          const pages = item.sourceSection.pageIndexes;
+          const range = pages.length ? ` · source pages ${pages[0] + 1}${pages.length > 1 ? `–${pages[pages.length - 1] + 1}` : ''}` : ' · no content pages';
+          return item.originalPosition === position
+            ? `Existing position ${item.originalPosition}${range}`
+            : `Existing position ${item.originalPosition} → shifted${range}`;
+        })()
+      : item.change === 'replace'
+        ? `NEW — replaces final position ${position}`
+        : `NEW — inserted at ${position}`;
+    const contentText = item.kind === 'existing'
+      ? item.description
+      : `${item.description} (${item.operation.file.name})`;
+    const tr = document.createElement('tr');
+    if (item.kind === 'new') tr.classList.add(item.change === 'replace' ? 'insert-row-replace' : 'insert-row-new');
+    tr.innerHTML = `
+      <td><strong>${position}</strong></td>
+      <td class="${asset.kind === 'missing' || asset.duplicate ? 'tab-missing' : ''}">${escapeHtml(tabText)}</td>
+      <td>${escapeHtml(contentText)}</td>
+      <td>${escapeHtml(sourceText)}</td>
+    `;
+    els.insertPreviewBody.append(tr);
+  });
+}
+
+async function appendSourcePageIndexes(output, source, pageIndexes, { removeLinks = false } = {}) {
+  if (!pageIndexes.length) return [];
+  const pages = await output.copyPages(source, pageIndexes);
+  const outputIndexes = [];
+  pages.forEach((page) => {
+    output.addPage(page);
+    outputIndexes.push(output.getPageCount() - 1);
+    if (removeLinks) removeLinkAnnotations(output, page);
+  });
+  return outputIndexes;
+}
+
+async function buildInsertedBinder() {
+  const plan = getInsertPlan();
+  const validation = validateInsertPlan(plan);
+  if (!validation.ok) {
+    renderInsertWorkspace();
+    return;
+  }
+
+  els.insertDownload.disabled = true;
+  try {
+    const output = await createOutputPdfDocument();
+    const source = await PDFDocument.load(insertState.bytes.slice(), { updateMetadata: false });
+    const bookmarks = [];
+    const contentPageTargets = [];
+    const frontMatterMap = new Map();
+    const indexPageSet = new Set(insertState.indexRows.map((row) => row.pageIndex));
+
+    if (insertState.frontMatterPageIndexes.length) {
+      setInsertStatus(`Preserving ${insertState.frontMatterPageIndexes.length} front-matter page${insertState.frontMatterPageIndexes.length === 1 ? '' : 's'}…`);
+      for (const sourcePageIndex of insertState.frontMatterPageIndexes) {
+        const [copiedPage] = await output.copyPages(source, [sourcePageIndex]);
+        output.addPage(copiedPage);
+        const outputPageIndex = output.getPageCount() - 1;
+        frontMatterMap.set(sourcePageIndex, outputPageIndex);
+        if (indexPageSet.has(sourcePageIndex)) removeLinkAnnotations(output, copiedPage);
+      }
+    }
+
+    if (els.insertCreateBookmarks.checked && insertState.indexRows.length) {
+      const firstIndexSourcePage = Math.min(...insertState.indexRows.map((row) => row.pageIndex));
+      const indexOutputPage = frontMatterMap.get(firstIndexSourcePage);
+      if (indexOutputPage != null) bookmarks.push({ title: 'INDEX', pageIndex: indexOutputPage });
+    }
+
+    for (let i = 0; i < plan.items.length; i += 1) {
+      const position = i + 1;
+      const item = plan.items[i];
+      const tabAsset = getTabAssetForInsertPosition(position);
+      const tabPageIndex = output.getPageCount();
+
+      if (tabAsset.kind === 'source') {
+        setInsertStatus(`Adding positional TAB ${position} from the existing binder…`);
+        await appendSourcePageIndexes(output, source, [tabAsset.sourceTab.pageIndex]);
+      } else if (tabAsset.kind === 'extra') {
+        setInsertStatus(`Adding extra positional TAB ${position}: ${tabAsset.extraTab.file.name}`);
+        await appendPdfToOutput(output, tabAsset.extraTab.file);
+      } else {
+        throw new Error(`No tab page is available for final position ${position}.`);
+      }
+
+      if (els.insertCreateBookmarks.checked) {
+        const title = tabAsset.kind === 'extra'
+          ? (tabAsset.extraTab.bookmarkTitle || `TAB ${position}`)
+          : (tabAsset.sourceTab.label || `TAB ${position}`);
+        bookmarks.push({ title, pageIndex: tabPageIndex });
+      }
+
+      const contentPageIndex = output.getPageCount();
+      contentPageTargets.push(contentPageIndex);
+      if (item.kind === 'existing') {
+        setInsertStatus(`Adding existing content for final position ${position}…`);
+        await appendSourcePageIndexes(output, source, item.sourceSection.pageIndexes);
+      } else {
+        setInsertStatus(`Adding new content at final position ${position}: ${item.operation.file.name}`);
+        await appendPdfToOutput(output, item.operation.file);
+      }
+    }
+
+    const indexState = getInsertIndexLinkState(plan.items.length);
+    let refreshedLinks = 0;
+    if (indexState.canRefresh && els.insertRefreshIndexLinks.checked) {
+      setInsertStatus(`Refreshing ${insertState.indexRows.length} existing index link${insertState.indexRows.length === 1 ? '' : 's'}…`);
+      insertState.indexRows.forEach((row) => {
+        const sourcePageIndex = frontMatterMap.get(row.pageIndex);
+        const targetPageIndex = contentPageTargets[row.number - 1];
+        if (sourcePageIndex == null || targetPageIndex == null) throw new Error(`Could not map existing index row ${row.number}.`);
+        addInternalLinkAnnotation(output, output.getPage(sourcePageIndex), row.rect, targetPageIndex);
+        refreshedLinks += 1;
+      });
+    }
+
+    if (bookmarks.length) {
+      setInsertStatus(`Creating ${bookmarks.length} top-level bookmark${bookmarks.length === 1 ? '' : 's'}…`);
+      addTopLevelBookmarks(output, bookmarks);
+    }
+
+    setInsertStatus('Saving edited binder…');
+    const bytes = await output.save();
+    const filename = sanitizePdfFilename(els.insertOutputName.value || 'Edited Binder.pdf');
+    downloadBlob(new Blob([bytes], { type: 'application/pdf' }), filename);
+
+    const insertCount = plan.inserts.length;
+    const replaceCount = plan.replacements.length;
+    const changeParts = [];
+    if (insertCount) changeParts.push(`${insertCount} inserted`);
+    if (replaceCount) changeParts.push(`${replaceCount} replaced`);
+    const indexPhrase = insertState.indexRows.length
+      ? refreshedLinks
+        ? ` ${refreshedLinks} index link${refreshedLinks === 1 ? '' : 's'} refreshed.`
+        : ' Existing detected index links were removed because they were not safely refreshable.'
+      : '';
+    setInsertStatus(`Built ${filename}: ${changeParts.join(', ')}; ${plan.items.length} final position${plan.items.length === 1 ? '' : 's'}.${indexPhrase}`, 'success');
+  } catch (error) {
+    console.error(error);
+    setInsertStatus(`Could not build the edited binder: ${friendlyError(error)}`, 'error');
+  } finally {
+    const currentValidation = validateInsertPlan(getInsertPlan());
+    els.insertDownload.disabled = !currentValidation.ok;
+  }
+}
+
+function setInsertStatus(message, type = '') {
+  els.insertStatus.textContent = message;
+  els.insertStatus.className = `status ${type}`.trim();
 }
 
 function isPdfFile(file) {

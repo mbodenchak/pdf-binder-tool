@@ -20,6 +20,7 @@
       <nav class="mode-tabs" aria-label="Tool mode">
         <button class="mode-tab active" data-mode="split">Split PDF</button>
         <button class="mode-tab" data-mode="build">Build Binder</button>
+        <button class="mode-tab" data-mode="insert">Insert Documents</button>
       </nav>
 
       <main>
@@ -237,6 +238,98 @@
                 </thead>
                 <tbody id="build-body">
                   <tr><td colspan="8" class="empty-cell">No content PDFs loaded.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+        </section>
+
+        <section id="insert-mode" class="mode-panel">
+          <div class="toolbar card insert-toolbar">
+            <label class="file-button">
+              Open existing binder
+              <input id="insert-binder" type="file" accept="application/pdf,.pdf" hidden />
+            </label>
+            <label class="file-button">
+              Add documents
+              <input id="insert-files" type="file" accept="application/pdf,.pdf" multiple hidden />
+            </label>
+            <label class="file-button">
+              Add extra tab PDFs
+              <input id="insert-tabs" type="file" accept="application/pdf,.pdf" multiple hidden />
+            </label>
+            <button id="clear-insert-tabs" disabled>Clear extra tabs</button>
+            <label class="inline-check">
+              <input id="insert-create-bookmarks" type="checkbox" checked />
+              Rebuild INDEX/TAB bookmarks
+            </label>
+            <label class="inline-check">
+              <input id="insert-refresh-index-links" type="checkbox" checked disabled />
+              Refresh existing index links when safe
+            </label>
+            <label class="output-name-label">
+              Output
+              <input id="insert-output-name" type="text" value="Edited Binder.pdf" />
+            </label>
+            <button id="insert-download" class="primary" disabled>Build edited binder</button>
+            <span id="insert-status" class="status">Open an existing tabbed binder to begin.</span>
+          </div>
+
+          <section class="card insert-summary-panel">
+            <div class="panel-heading manifest-heading">
+              <div>
+                <h2>Existing binder structure</h2>
+                <p>The app detects physical TAB pages, treats everything after each TAB through the next TAB as that position's content, and preserves pages before TAB 1 as front matter. Existing index links are never trusted blindly after an edit.</p>
+              </div>
+              <span id="insert-analysis-summary" class="index-detection-summary">No binder loaded.</span>
+            </div>
+            <div id="insert-structure-note" class="insert-structure-note">Load a binder to detect its tab positions.</div>
+          </section>
+
+          <section class="card insert-operations-panel">
+            <div class="panel-heading manifest-heading">
+              <div>
+                <h2>Insert operations</h2>
+                <p>For each new PDF, choose its desired position in the <strong>finished</strong> binder. <strong>Replace</strong> keeps the number of positions the same; <strong>Insert &amp; shift</strong> creates a new position and shifts later content down.</p>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table class="insert-operations-table">
+                <thead>
+                  <tr>
+                    <th>PDF</th>
+                    <th>Description</th>
+                    <th>Final position</th>
+                    <th>Action</th>
+                    <th>Remove</th>
+                  </tr>
+                </thead>
+                <tbody id="insert-operations-body">
+                  <tr><td colspan="5" class="empty-cell">Add one or more PDFs to create insertion/replacement operations.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="card insert-preview-panel">
+            <div class="panel-heading manifest-heading">
+              <div>
+                <h2>Proposed final binder</h2>
+                <p>This is the order that will be built. Existing tab pages remain positional. If the finished binder needs positions beyond those already present, provide matching extra tab PDFs such as TAB 21.pdf.</p>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table class="insert-preview-table">
+                <thead>
+                  <tr>
+                    <th>Position</th>
+                    <th>Tab asset</th>
+                    <th>Content</th>
+                    <th>Source</th>
+                  </tr>
+                </thead>
+                <tbody id="insert-preview-body">
+                  <tr><td colspan="4" class="empty-cell">Open a binder to preview its existing positions.</td></tr>
                 </tbody>
               </table>
             </div>

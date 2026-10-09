@@ -202,3 +202,28 @@ No split, merge, ordering, index-detection, or bookmark-title behavior changed i
 
 - Updated PDF.js cleanup to call `PDFDocumentLoadingTask.destroy()` rather than `PDFDocumentProxy.destroy()`.
 - Cleanup failures are now isolated from index/bookmark analysis, so a cleanup API mismatch cannot falsely report that index detection failed.
+
+## v0.10.0 — Insert Documents workflow
+
+A third top-level mode, **Insert Documents**, supports editing an already assembled tabbed binder without first downloading all of its component PDFs.
+
+1. Open the existing binder. The app scans for physical `TAB 1`, `TAB 2`, etc. divider pages using PDF.js text extraction.
+2. Pages before the first detected TAB are preserved as front matter. Each TAB page remains a positional asset; the pages following it through the next TAB become that position's existing content.
+3. Add one or more new content PDFs. For each PDF, choose a **final position** and one of two actions:
+   - **Replace** — replaces the content occupying that final position while retaining that position's tab.
+   - **Insert & shift** — creates a new position and shifts later existing content down.
+4. Multiple operations are resolved against the finished binder, not sequentially against changing intermediate positions. Duplicate target positions are blocked.
+5. Existing source tab pages are reused positionally. If insert-and-shift operations make the finished binder longer than the original, add extra tab PDFs named/mapped by position, such as `TAB 21.pdf`.
+6. The Proposed Final Binder table shows the resolved order, source page ranges for retained content, whether a row is new/replaced/shifted, and the tab asset that will be used.
+7. On rebuild, the app recreates top-level TAB bookmarks using Fit Page. If numbered index rows are detected in preserved front matter, an INDEX bookmark is also recreated at the detected index page.
+
+### Existing index handling in Insert Documents
+
+Existing internal index links are treated conservatively because edits can invalidate their destinations.
+
+- Link annotations on detected index pages are removed during rebuild rather than copied blindly.
+- If the detected index has exactly rows 1 through N and the finished binder also has N positions, **Refresh existing index links when safe** can recreate the Description-cell links so they point to the first content page after each final positional tab.
+- If an Insert & shift operation changes the number of positions, the old visible index necessarily has the wrong row count. The app warns about the mismatch and removes the old links rather than guessing. The visible index should then be updated separately (for example, with the normal Build Binder workflow and a revised index PDF).
+- Replacement-only edits can usually refresh links because the number of positions stays the same, but the visible Description/Date text may still need manual revision if the replacement document differs from the old entry.
+
+This first Insert Documents version intentionally requires extractable TAB labels. If a binder's physical tabs are image-only or cannot be reliably detected, use the existing Split PDF / Build Binder workflow where divider pages can be marked manually.

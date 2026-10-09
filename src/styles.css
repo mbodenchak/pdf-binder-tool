@@ -228,3 +228,45 @@ td input { width: 100%; min-width: 130px; border: 1px solid #ccd4df; border-radi
 @media (max-width: 700px) {
   .bulk-import-row { padding-left: 16px; padding-right: 16px; }
 }
+
+/* v0.10.0: direct insert/replace workflow */
+.insert-toolbar { align-items: center; }
+.insert-summary-panel,
+.insert-operations-panel { margin-bottom: 12px; overflow: hidden; }
+.insert-preview-panel { overflow: hidden; }
+.insert-structure-note {
+  padding: 11px 14px;
+  color: #5f6c7c;
+  font-size: .82rem;
+  line-height: 1.4;
+  background: #fbfcfd;
+}
+.insert-operations-table td:nth-child(1) { min-width: 230px; }
+.insert-operations-table td:nth-child(2) { min-width: 300px; }
+.insert-operations-table td:nth-child(3) { width: 130px; }
+.insert-operations-table td:nth-child(4) { min-width: 155px; }
+.insert-operations-table input,
+.insert-operations-table select {
+  width: 100%;
+  border: 1px solid #ccd4df;
+  border-radius: 7px;
+  padding: 7px 8px;
+  color: #1d2736;
+  background: #fff;
+  font: inherit;
+}
+.insert-position-input {
+  width: 82px !important;
+  min-width: 82px !important;
+  text-align: center;
+  font-weight: 800;
+}
+.insert-preview-table td:nth-child(2) { min-width: 240px; }
+.insert-preview-table td:nth-child(3) { min-width: 360px; }
+.insert-preview-table td:nth-child(4) { min-width: 220px; }
+.insert-row-new { background: #f5fbf7; }
+.insert-row-replace { background: #fff8ed; }
+
+@media (max-width: 900px) {
+  .insert-analysis-summary { text-align: left; }
+}
