@@ -229,9 +229,10 @@ td input { width: 100%; min-width: 130px; border: 1px solid #ccd4df; border-radi
   .bulk-import-row { padding-left: 16px; padding-right: 16px; }
 }
 
-/* v0.10.0: direct insert/replace workflow */
+/* v0.10.1: direct insert/replace workflow + replacement index */
 .insert-toolbar { align-items: center; }
 .insert-summary-panel,
+.insert-index-panel,
 .insert-operations-panel { margin-bottom: 12px; overflow: hidden; }
 .insert-preview-panel { overflow: hidden; }
 .insert-structure-note {

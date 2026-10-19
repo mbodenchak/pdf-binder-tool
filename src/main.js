@@ -85,6 +85,10 @@ const els = {
   insertFiles: document.querySelector('#insert-files'),
   insertTabs: document.querySelector('#insert-tabs'),
   clearInsertTabs: document.querySelector('#clear-insert-tabs'),
+  insertIndex: document.querySelector('#insert-index'),
+  clearInsertIndex: document.querySelector('#clear-insert-index'),
+  insertIndexSummary: document.querySelector('#insert-index-summary'),
+  insertIndexBody: document.querySelector('#insert-index-body'),
   insertCreateBookmarks: document.querySelector('#insert-create-bookmarks'),
   insertRefreshIndexLinks: document.querySelector('#insert-refresh-index-links'),
   insertOutputName: document.querySelector('#insert-output-name'),
@@ -128,6 +132,9 @@ const insertState = {
   sourceTabs: [],
   sourceSections: [],
   indexRows: [],
+  replacementIndexFile: null,
+  replacementIndexInfo: null,
+  replacementIndexLoading: false,
   operations: [],
   extraTabs: [],
   analyzing: false,
@@ -247,6 +254,17 @@ els.insertTabs.addEventListener('change', async (event) => {
 });
 els.clearInsertTabs.addEventListener('click', () => {
   insertState.extraTabs = [];
+  renderInsertWorkspace();
+});
+els.insertIndex.addEventListener('change', async (event) => {
+  const [file] = event.target.files;
+  if (file) await loadInsertReplacementIndex(file);
+  event.target.value = '';
+});
+els.clearInsertIndex.addEventListener('click', () => {
+  insertState.replacementIndexFile = null;
+  insertState.replacementIndexInfo = null;
+  insertState.replacementIndexLoading = false;
   renderInsertWorkspace();
 });
 els.insertCreateBookmarks.addEventListener('change', renderInsertWorkspace);
@@ -2511,7 +2529,7 @@ function exportBuildXlsx() {
 
 
 // ---------------------------------------------------------------------------
-// Insert Documents workflow (v0.10.0)
+// Insert Documents workflow (v0.10.1)
 // ---------------------------------------------------------------------------
 
 async function loadInsertBinder(file) {
@@ -2527,6 +2545,9 @@ async function loadInsertBinder(file) {
   insertState.sourceTabs = [];
   insertState.sourceSections = [];
   insertState.indexRows = [];
+  insertState.replacementIndexFile = null;
+  insertState.replacementIndexInfo = null;
+  insertState.replacementIndexLoading = false;
   insertState.operations = [];
   insertState.analyzing = true;
   insertState.error = null;
@@ -2602,6 +2623,69 @@ async function loadInsertBinder(file) {
     insertState.analyzing = false;
     renderInsertWorkspace();
   }
+}
+
+async function loadInsertReplacementIndex(file) {
+  if (!isPdfFile(file)) {
+    setInsertStatus('The replacement index must be a PDF file.', 'error');
+    return;
+  }
+
+  insertState.replacementIndexFile = file;
+  insertState.replacementIndexInfo = null;
+  insertState.replacementIndexLoading = true;
+  renderInsertWorkspace();
+  setInsertStatus(`Analyzing replacement index ${file.name}…`);
+
+  let loadingTask = null;
+  try {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    loadingTask = pdfjsLib.getDocument({ data: bytes });
+    const pdf = await loadingTask.promise;
+    const rows = [];
+    let existingLinkRectsUsed = 0;
+
+    for (let pageIndex = 0; pageIndex < pdf.numPages; pageIndex += 1) {
+      const page = await pdf.getPage(pageIndex + 1);
+      const pageRows = await detectIndexRowsOnPage(page, pageIndex);
+      existingLinkRectsUsed += pageRows.filter((row) => row.rectSource === 'existing-link').length;
+      rows.push(...pageRows);
+    }
+
+    rows.sort((a, b) => a.number - b.number || a.pageIndex - b.pageIndex || b.rect[3] - a.rect[3]);
+    insertState.replacementIndexInfo = {
+      pageCount: pdf.numPages,
+      rows,
+      existingLinkRectsUsed,
+    };
+  } catch (error) {
+    console.error(`Could not analyze replacement index ${file.name}.`, error);
+    insertState.replacementIndexInfo = {
+      pageCount: 0,
+      rows: [],
+      existingLinkRectsUsed: 0,
+      error: friendlyError(error),
+    };
+  } finally {
+    if (loadingTask) {
+      try {
+        await loadingTask.destroy();
+      } catch (cleanupError) {
+        console.warn(`Could not fully release PDF.js resources for ${file.name}.`, cleanupError);
+      }
+    }
+    insertState.replacementIndexLoading = false;
+    renderInsertWorkspace();
+  }
+}
+
+function getInsertActiveIndexRows() {
+  if (insertState.replacementIndexFile) return insertState.replacementIndexInfo?.rows || [];
+  return insertState.indexRows || [];
+}
+
+function getInsertOldIndexPageIndexes() {
+  return [...new Set((insertState.indexRows || []).map((row) => row.pageIndex))].sort((a, b) => a - b);
 }
 
 function addInsertOperations(files) {
@@ -2761,6 +2845,8 @@ function validateInsertPlan(plan = getInsertPlan()) {
   if (!insertState.file) errors.push('Open an existing binder.');
   if (insertState.file && !insertState.sourceTabs.length && !insertState.analyzing) errors.push('No positional TAB pages were detected.');
   if (!insertState.operations.length) errors.push('Add at least one PDF to insert or replace.');
+  if (insertState.replacementIndexLoading) errors.push('Replacement index analysis is still running.');
+  if (insertState.replacementIndexInfo?.error) errors.push(`Could not analyze the replacement index: ${insertState.replacementIndexInfo.error}`);
 
   if (!plan.issues.length) {
     for (let position = 1; position <= plan.items.length; position += 1) {
@@ -2776,7 +2862,14 @@ function validateInsertPlan(plan = getInsertPlan()) {
   }
 
   const indexCheck = getInsertIndexLinkState(plan.items.length);
-  if (insertState.indexRows.length && !indexCheck.canRefresh) {
+  if (insertState.replacementIndexFile) {
+    if (!insertState.replacementIndexLoading && !insertState.replacementIndexInfo?.error && !indexCheck.canRefresh) {
+      errors.push(`Replacement index does not match the finished binder: ${indexCheck.reason}`);
+    }
+    if (!insertState.indexRows.length) {
+      warnings.push('No old index pages were detected in the existing binder. The replacement index will be inserted at the end of the preserved front matter, immediately before TAB 1.');
+    }
+  } else if (insertState.indexRows.length && !indexCheck.canRefresh) {
     warnings.push(`The existing index has ${insertState.indexRows.length} detected row${insertState.indexRows.length === 1 ? '' : 's'}, but the finished binder has ${plan.items.length} position${plan.items.length === 1 ? '' : 's'}. Its old links will be removed, not guessed.`);
   } else if (indexCheck.canRefresh && plan.replacements.length) {
     warnings.push('Index links can be refreshed, but replacement documents may make the visible index description/date stale. Review the index text before final use.');
@@ -2786,20 +2879,81 @@ function validateInsertPlan(plan = getInsertPlan()) {
 }
 
 function getInsertIndexLinkState(finalCount) {
-  const rows = insertState.indexRows || [];
-  if (!rows.length || !finalCount) return { canRefresh: false, reason: 'No index rows detected.' };
+  const rows = getInsertActiveIndexRows();
+  const source = insertState.replacementIndexFile ? 'replacement' : 'existing';
+  if (!rows.length || !finalCount) return { canRefresh: false, reason: 'No numbered index rows were detected.', source };
   const counts = new Map();
   rows.forEach((row) => counts.set(row.number, (counts.get(row.number) || 0) + 1));
-  if ([...counts.values()].some((count) => count !== 1)) return { canRefresh: false, reason: 'Duplicate index row numbers were detected.' };
-  if (rows.length !== finalCount) return { canRefresh: false, reason: 'Index row count does not match final binder positions.' };
+  if ([...counts.values()].some((count) => count !== 1)) return { canRefresh: false, reason: 'duplicate index row numbers were detected.', source };
+  if (rows.length !== finalCount) return { canRefresh: false, reason: `${rows.length} numbered row${rows.length === 1 ? '' : 's'} were detected for ${finalCount} final position${finalCount === 1 ? '' : 's'}.`, source };
   for (let number = 1; number <= finalCount; number += 1) {
-    if (!counts.has(number)) return { canRefresh: false, reason: `Index row ${number} is missing.` };
+    if (!counts.has(number)) return { canRefresh: false, reason: `index row ${number} is missing.`, source };
   }
-  return { canRefresh: true, reason: '' };
+  return { canRefresh: true, reason: '', source };
+}
+
+function renderInsertIndexPanel(plan = getInsertPlan(), validation = validateInsertPlan(plan)) {
+  els.clearInsertIndex.disabled = !insertState.replacementIndexFile;
+
+  if (insertState.replacementIndexLoading) {
+    els.insertIndexSummary.textContent = `Analyzing ${insertState.replacementIndexFile?.name || 'replacement index'}…`;
+    els.insertIndexSummary.className = 'index-detection-summary';
+    els.insertIndexBody.innerHTML = '<tr><td colspan="5" class="empty-cell">Detecting numbered rows and Description link rectangles…</td></tr>';
+    return;
+  }
+
+  if (insertState.replacementIndexFile) {
+    const info = insertState.replacementIndexInfo || { rows: [], pageCount: 0, existingLinkRectsUsed: 0 };
+    if (info.error) {
+      els.insertIndexSummary.textContent = `Could not analyze ${insertState.replacementIndexFile.name}.`;
+      els.insertIndexSummary.className = 'index-detection-summary error';
+      els.insertIndexBody.innerHTML = `<tr><td colspan="5" class="empty-cell">${escapeHtml(info.error)}</td></tr>`;
+      return;
+    }
+    const oldPages = getInsertOldIndexPageIndexes();
+    const replacementNote = oldPages.length
+      ? ` It will replace ${oldPages.length} detected old index page${oldPages.length === 1 ? '' : 's'}.`
+      : ' No old index pages were detected; it will be inserted immediately before TAB 1.';
+    const reusedNote = info.existingLinkRectsUsed
+      ? ` ${info.existingLinkRectsUsed} existing link rectangle${info.existingLinkRectsUsed === 1 ? '' : 's'} will be reused for placement.`
+      : '';
+    els.insertIndexSummary.textContent = `${insertState.replacementIndexFile.name} — ${info.pageCount} page${info.pageCount === 1 ? '' : 's'}, ${info.rows.length} numbered row${info.rows.length === 1 ? '' : 's'} detected.${replacementNote}${reusedNote}`;
+    els.insertIndexSummary.className = `index-detection-summary${validation.indexCheck.canRefresh ? ' success' : ' error'}`;
+  } else if (insertState.indexRows.length) {
+    els.insertIndexSummary.textContent = `Using existing index — ${insertState.indexRows.length} numbered row${insertState.indexRows.length === 1 ? '' : 's'} detected.`;
+    els.insertIndexSummary.className = `index-detection-summary${validation.indexCheck.canRefresh ? ' success' : ''}`;
+  } else {
+    els.insertIndexSummary.textContent = 'Using existing front matter; no numbered index rows were detected.';
+    els.insertIndexSummary.className = 'index-detection-summary';
+  }
+
+  const rows = getInsertActiveIndexRows();
+  if (!rows.length) {
+    els.insertIndexBody.innerHTML = '<tr><td colspan="5" class="empty-cell">Add a replacement index PDF to preview and validate its rows.</td></tr>';
+    return;
+  }
+
+  els.insertIndexBody.innerHTML = '';
+  rows.forEach((row) => {
+    const item = plan.items[row.number - 1];
+    const destination = item
+      ? `Position ${row.number} — ${item.description || (item.kind === 'new' ? item.operation.file.name : item.sourceSection.tabLabel)}`
+      : `No final content at position ${row.number}`;
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${row.number}</td>
+      <td>${row.pageIndex + 1}</td>
+      <td>${escapeHtml(row.description || '')}</td>
+      <td>${escapeHtml(row.date || '')}</td>
+      <td class="${item ? 'index-destination' : 'index-destination missing'}">${escapeHtml(destination)}</td>
+    `;
+    els.insertIndexBody.append(tr);
+  });
 }
 
 function renderInsertWorkspace() {
   els.clearInsertTabs.disabled = insertState.extraTabs.length === 0;
+  els.clearInsertIndex.disabled = !insertState.replacementIndexFile;
 
   if (!insertState.file) {
     els.insertAnalysisSummary.textContent = 'No binder loaded.';
@@ -2824,15 +2978,20 @@ function renderInsertWorkspace() {
       : '';
     els.insertAnalysisSummary.textContent = `${insertState.file.name} — ${insertState.pageCount} pages, ${insertState.sourceTabs.length} TAB position${insertState.sourceTabs.length === 1 ? '' : 's'}.`;
     els.insertAnalysisSummary.className = 'index-detection-summary success';
-    els.insertStructureNote.textContent = `${insertState.frontMatterPageIndexes.length} front-matter page${insertState.frontMatterPageIndexes.length === 1 ? '' : 's'} will be preserved. ${indexNote}${extraNote}`;
+    const oldIndexPages = getInsertOldIndexPageIndexes();
+    const frontMatterNote = insertState.replacementIndexFile && oldIndexPages.length
+      ? `${Math.max(0, insertState.frontMatterPageIndexes.length - oldIndexPages.length)} non-index front-matter page${Math.max(0, insertState.frontMatterPageIndexes.length - oldIndexPages.length) === 1 ? '' : 's'} will be preserved; ${oldIndexPages.length} detected old index page${oldIndexPages.length === 1 ? '' : 's'} will be replaced.`
+      : `${insertState.frontMatterPageIndexes.length} front-matter page${insertState.frontMatterPageIndexes.length === 1 ? '' : 's'} will be preserved.`;
+    els.insertStructureNote.textContent = `${frontMatterNote} ${indexNote}${extraNote}`;
   }
 
   renderInsertOperationsTable();
   const plan = getInsertPlan();
   const validation = validateInsertPlan(plan);
+  renderInsertIndexPanel(plan, validation);
   renderInsertPreviewTable(plan);
 
-  els.insertRefreshIndexLinks.disabled = !validation.indexCheck.canRefresh;
+  els.insertRefreshIndexLinks.disabled = !validation.indexCheck.canRefresh || insertState.replacementIndexLoading;
   const refreshWillRun = validation.indexCheck.canRefresh && els.insertRefreshIndexLinks.checked;
   els.insertDownload.disabled = !validation.ok;
 
@@ -2851,11 +3010,16 @@ function renderInsertWorkspace() {
   const changes = [];
   if (insertCount) changes.push(`${insertCount} insert-and-shift operation${insertCount === 1 ? '' : 's'}`);
   if (replaceCount) changes.push(`${replaceCount} replacement${replaceCount === 1 ? '' : 's'}`);
-  const indexPhrase = insertState.indexRows.length
+  const activeIndexRows = getInsertActiveIndexRows();
+  const indexPhrase = insertState.replacementIndexFile
     ? refreshWillRun
-      ? ' Existing index links will be regenerated to the final content pages.'
-      : ' Existing detected index links will be removed because they cannot be safely mapped.'
-    : '';
+      ? ' The replacement index will replace the detected old index pages and its Description links will be created for the final content pages.'
+      : ' The replacement index will be used, but Description links are turned off.'
+    : activeIndexRows.length
+      ? refreshWillRun
+        ? ' Existing index links will be regenerated to the final content pages.'
+        : ' Existing detected index links will be removed because they cannot be safely mapped.'
+      : '';
   const warningPhrase = validation.warnings.length ? ` Warning: ${validation.warnings[0]}` : '';
   setInsertStatus(`${plan.items.length} final position${plan.items.length === 1 ? '' : 's'} from ${changes.join(' and ')}.${indexPhrase}${warningPhrase}`, validation.warnings.length ? '' : 'success');
 }
@@ -2976,23 +3140,55 @@ async function buildInsertedBinder() {
     const bookmarks = [];
     const contentPageTargets = [];
     const frontMatterMap = new Map();
-    const indexPageSet = new Set(insertState.indexRows.map((row) => row.pageIndex));
+    const oldIndexPageIndexes = getInsertOldIndexPageIndexes();
+    const oldIndexPageSet = new Set(oldIndexPageIndexes);
+    let replacementIndexStart = null;
+    let replacementIndexPageCount = 0;
+    let removedReplacementLinks = 0;
+    let replacementInserted = false;
+
+    const appendReplacementIndex = async () => {
+      if (!insertState.replacementIndexFile || replacementInserted) return;
+      replacementIndexStart = output.getPageCount();
+      setInsertStatus(`Adding replacement index: ${insertState.replacementIndexFile.name}…`);
+      const result = await appendIndexPdfToOutput(output, insertState.replacementIndexFile);
+      replacementIndexPageCount = result.pageCount;
+      removedReplacementLinks = result.removedLinks;
+      replacementInserted = true;
+    };
 
     if (insertState.frontMatterPageIndexes.length) {
-      setInsertStatus(`Preserving ${insertState.frontMatterPageIndexes.length} front-matter page${insertState.frontMatterPageIndexes.length === 1 ? '' : 's'}…`);
+      setInsertStatus(`Processing ${insertState.frontMatterPageIndexes.length} front-matter page${insertState.frontMatterPageIndexes.length === 1 ? '' : 's'}…`);
       for (const sourcePageIndex of insertState.frontMatterPageIndexes) {
+        if (insertState.replacementIndexFile && oldIndexPageSet.has(sourcePageIndex)) {
+          await appendReplacementIndex();
+          continue;
+        }
+
         const [copiedPage] = await output.copyPages(source, [sourcePageIndex]);
         output.addPage(copiedPage);
         const outputPageIndex = output.getPageCount() - 1;
         frontMatterMap.set(sourcePageIndex, outputPageIndex);
-        if (indexPageSet.has(sourcePageIndex)) removeLinkAnnotations(output, copiedPage);
+        if (!insertState.replacementIndexFile && oldIndexPageSet.has(sourcePageIndex)) {
+          removeLinkAnnotations(output, copiedPage);
+        }
       }
     }
 
-    if (els.insertCreateBookmarks.checked && insertState.indexRows.length) {
-      const firstIndexSourcePage = Math.min(...insertState.indexRows.map((row) => row.pageIndex));
-      const indexOutputPage = frontMatterMap.get(firstIndexSourcePage);
-      if (indexOutputPage != null) bookmarks.push({ title: 'INDEX', pageIndex: indexOutputPage });
+    // If no old index pages were detectable, place the supplied replacement
+    // after all preserved front matter and immediately before TAB 1.
+    if (insertState.replacementIndexFile && !replacementInserted) {
+      await appendReplacementIndex();
+    }
+
+    if (els.insertCreateBookmarks.checked) {
+      if (insertState.replacementIndexFile && replacementIndexStart != null) {
+        bookmarks.push({ title: 'INDEX', pageIndex: replacementIndexStart });
+      } else if (insertState.indexRows.length) {
+        const firstIndexSourcePage = Math.min(...insertState.indexRows.map((row) => row.pageIndex));
+        const indexOutputPage = frontMatterMap.get(firstIndexSourcePage);
+        if (indexOutputPage != null) bookmarks.push({ title: 'INDEX', pageIndex: indexOutputPage });
+      }
     }
 
     for (let i = 0; i < plan.items.length; i += 1) {
@@ -3030,13 +3226,17 @@ async function buildInsertedBinder() {
     }
 
     const indexState = getInsertIndexLinkState(plan.items.length);
+    const activeIndexRows = getInsertActiveIndexRows();
     let refreshedLinks = 0;
     if (indexState.canRefresh && els.insertRefreshIndexLinks.checked) {
-      setInsertStatus(`Refreshing ${insertState.indexRows.length} existing index link${insertState.indexRows.length === 1 ? '' : 's'}…`);
-      insertState.indexRows.forEach((row) => {
-        const sourcePageIndex = frontMatterMap.get(row.pageIndex);
+      const actionWord = insertState.replacementIndexFile ? 'Creating' : 'Refreshing';
+      setInsertStatus(`${actionWord} ${activeIndexRows.length} index link${activeIndexRows.length === 1 ? '' : 's'}…`);
+      activeIndexRows.forEach((row) => {
+        const sourcePageIndex = insertState.replacementIndexFile
+          ? (replacementIndexStart == null ? null : replacementIndexStart + row.pageIndex)
+          : frontMatterMap.get(row.pageIndex);
         const targetPageIndex = contentPageTargets[row.number - 1];
-        if (sourcePageIndex == null || targetPageIndex == null) throw new Error(`Could not map existing index row ${row.number}.`);
+        if (sourcePageIndex == null || targetPageIndex == null) throw new Error(`Could not map index row ${row.number}.`);
         addInternalLinkAnnotation(output, output.getPage(sourcePageIndex), row.rect, targetPageIndex);
         refreshedLinks += 1;
       });
@@ -3057,11 +3257,19 @@ async function buildInsertedBinder() {
     const changeParts = [];
     if (insertCount) changeParts.push(`${insertCount} inserted`);
     if (replaceCount) changeParts.push(`${replaceCount} replaced`);
-    const indexPhrase = insertState.indexRows.length
-      ? refreshedLinks
-        ? ` ${refreshedLinks} index link${refreshedLinks === 1 ? '' : 's'} refreshed.`
-        : ' Existing detected index links were removed because they were not safely refreshable.'
-      : '';
+
+    let indexPhrase = '';
+    if (insertState.replacementIndexFile) {
+      indexPhrase = ` Replacement index applied (${replacementIndexPageCount} page${replacementIndexPageCount === 1 ? '' : 's'})`;
+      if (refreshedLinks) indexPhrase += ` with ${refreshedLinks} linked entr${refreshedLinks === 1 ? 'y' : 'ies'}`;
+      indexPhrase += '.';
+      if (removedReplacementLinks) indexPhrase += ` ${removedReplacementLinks} stale link annotation${removedReplacementLinks === 1 ? ' was' : 's were'} replaced.`;
+    } else if (insertState.indexRows.length) {
+      indexPhrase = refreshedLinks
+        ? ` ${refreshedLinks} existing index link${refreshedLinks === 1 ? '' : 's'} refreshed.`
+        : ' Existing detected index links were removed because they were not safely refreshable.';
+    }
+
     setInsertStatus(`Built ${filename}: ${changeParts.join(', ')}; ${plan.items.length} final position${plan.items.length === 1 ? '' : 's'}.${indexPhrase}`, 'success');
   } catch (error) {
     console.error(error);

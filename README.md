@@ -1,5 +1,19 @@
-# PDF Binder Tool — browser-only MVP v0.9.1
+# PDF Binder Tool — browser-only MVP v0.10.1
 
+
+
+## v0.10.1 — Replacement index in Insert Documents
+
+Insert Documents can now accept an updated index PDF directly.
+
+- Use **Replace index PDF** after defining the insertion/replacement operations.
+- The replacement index is analyzed with the same numbered-row and Description-cell detection used by Build Binder.
+- Its numbered rows must reconcile exactly with the finished binder positions (1 through N); a mismatch blocks the build rather than creating a plausible but incorrect index.
+- When old index pages are detected in the existing binder, those pages are removed and the replacement index is inserted at the same front-matter location. Other front matter is preserved.
+- If no old index pages are detected, the replacement index is inserted after the preserved front matter and immediately before TAB 1, with a warning.
+- Existing link annotations in the supplied replacement index are removed and recreated against the finished binder. Each Description row points to the first content page after its positional tab and uses Fit Page.
+- When bookmark rebuilding is enabled, the replacement index becomes the first top-level bookmark named `INDEX`; positional TAB bookmarks follow it.
+- **Use existing index** clears the replacement and returns to the original v0.10.0 behavior.
 
 ## v0.9.1 filename-placeholder cleanup
 
@@ -217,13 +231,14 @@ A third top-level mode, **Insert Documents**, supports editing an already assemb
 6. The Proposed Final Binder table shows the resolved order, source page ranges for retained content, whether a row is new/replaced/shifted, and the tab asset that will be used.
 7. On rebuild, the app recreates top-level TAB bookmarks using Fit Page. If numbered index rows are detected in preserved front matter, an INDEX bookmark is also recreated at the detected index page.
 
-### Existing index handling in Insert Documents
+### Index handling in Insert Documents
 
 Existing internal index links are treated conservatively because edits can invalidate their destinations.
 
-- Link annotations on detected index pages are removed during rebuild rather than copied blindly.
-- If the detected index has exactly rows 1 through N and the finished binder also has N positions, **Refresh existing index links when safe** can recreate the Description-cell links so they point to the first content page after each final positional tab.
-- If an Insert & shift operation changes the number of positions, the old visible index necessarily has the wrong row count. The app warns about the mismatch and removes the old links rather than guessing. The visible index should then be updated separately (for example, with the normal Build Binder workflow and a revised index PDF).
-- Replacement-only edits can usually refresh links because the number of positions stays the same, but the visible Description/Date text may still need manual revision if the replacement document differs from the old entry.
+- Link annotations on detected existing index pages are removed during rebuild rather than copied blindly.
+- If the existing index still has exactly rows 1 through N for the finished binder, **Create/refresh index links** can recreate the Description-cell links so they point to the first content page after each final positional tab.
+- For changed indexes, use **Replace index PDF**. The replacement is validated against the finished binder, substitutes for the detected old index pages, receives fresh internal links, and becomes the `INDEX` bookmark.
+- If an Insert & shift operation changes the number of positions, supplying a replacement index with the new row count is the recommended workflow.
+- Replacement-only edits can still reuse the existing index when its visible Description/Date text remains accurate.
 
 This first Insert Documents version intentionally requires extractable TAB labels. If a binder's physical tabs are image-only or cannot be reliably detected, use the existing Split PDF / Build Binder workflow where divider pages can be marked manually.

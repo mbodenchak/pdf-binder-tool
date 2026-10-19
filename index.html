@@ -259,13 +259,18 @@
               <input id="insert-tabs" type="file" accept="application/pdf,.pdf" multiple hidden />
             </label>
             <button id="clear-insert-tabs" disabled>Clear extra tabs</button>
+            <label class="file-button">
+              Replace index PDF
+              <input id="insert-index" type="file" accept="application/pdf,.pdf" hidden />
+            </label>
+            <button id="clear-insert-index" disabled>Use existing index</button>
             <label class="inline-check">
               <input id="insert-create-bookmarks" type="checkbox" checked />
               Rebuild INDEX/TAB bookmarks
             </label>
             <label class="inline-check">
               <input id="insert-refresh-index-links" type="checkbox" checked disabled />
-              Refresh existing index links when safe
+              Create/refresh index links
             </label>
             <label class="output-name-label">
               Output
@@ -284,6 +289,32 @@
               <span id="insert-analysis-summary" class="index-detection-summary">No binder loaded.</span>
             </div>
             <div id="insert-structure-note" class="insert-structure-note">Load a binder to detect its tab positions.</div>
+          </section>
+
+          <section class="card insert-index-panel">
+            <div class="panel-heading manifest-heading">
+              <div>
+                <h2>Replacement index</h2>
+                <p>Optional. Supply the updated index PDF for the finished binder. The app replaces the detected old index pages, preserves other front matter, verifies rows 1 through N against the final positions, recreates Description links, and makes the new index the first bookmark named INDEX.</p>
+              </div>
+              <span id="insert-index-summary" class="index-detection-summary">Using the existing index/front matter.</span>
+            </div>
+            <div class="table-wrap">
+              <table class="index-table">
+                <thead>
+                  <tr>
+                    <th>Index row</th>
+                    <th>Index page</th>
+                    <th>Description detected</th>
+                    <th>Date detected</th>
+                    <th>Final destination</th>
+                  </tr>
+                </thead>
+                <tbody id="insert-index-body">
+                  <tr><td colspan="5" class="empty-cell">Add a replacement index PDF to preview and validate its rows.</td></tr>
+                </tbody>
+              </table>
+            </div>
           </section>
 
           <section class="card insert-operations-panel">
