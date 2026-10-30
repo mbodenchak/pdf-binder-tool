@@ -1,4 +1,26 @@
-# PDF Binder Tool — browser-only MVP v0.10.1
+# PDF Binder Tool — browser-only MVP v0.11.1
+
+
+## v0.11.1 — Text-sized index link geometry
+
+- Existing index link rectangles are still reused exactly when the supplied index already contains usable link annotations.
+- When a supplied/replacement index has no usable links, generated Description links now use the actual detected Description text footprint rather than approximately filling the entire middle table cell.
+- Multi-line descriptions use the union of all detected Description text fragments, with small click-friendly padding. The generated rectangle is clamped to the detected row and kept out of the Date column.
+- This is intentionally a narrow, reversible experiment; PDF splitting, tab positioning, bookmarks, Fit Page destinations, and binder ordering are unchanged.
+
+## v0.11.0 — Reorder Binder workflow
+
+A fourth top-level mode, **Reorder Binder**, supports rearranging the existing document blocks inside an already assembled tabbed binder without first splitting them to disk.
+
+- Open an existing tabbed binder; the app detects physical TAB pages, front matter, content ranges, and numbered index rows using the same analysis used by Insert Documents.
+- Existing content blocks can be reordered by drag-and-drop, ↑/↓ controls, or by typing a new final position. Moving original position 40 to final position 13 shifts the intervening content automatically.
+- TAB pages remain positional assets. Moving the content originally under TAB 40 to final position 13 pairs that content with the existing physical TAB 13 page; the old TAB 40 page does not travel with it.
+- Original positions and source page ranges remain visible in the reorder table for verification. A **Reset order** button restores the source order.
+- The number of positions does not change, so no extra tab PDFs are required.
+- An updated index PDF can be supplied with **Replace index PDF**. Its rows must reconcile exactly with positions 1 through N; detected old index pages are replaced while unrelated front matter is preserved.
+- Existing or replacement Description-cell links are regenerated to the first content page after each final positional tab and use Fit Page destinations.
+- INDEX remains the first bookmark when an index is detected/supplied, followed by fresh positional TAB bookmarks.
+- If the original index is kept after content has been reordered, the app warns that its visible descriptions/dates are still in the old order even though its internal links can be refreshed.
 
 
 
@@ -133,7 +155,7 @@ This bookmark creation uses pdf-lib's low-level PDF outline objects because pdf-
 The Build Binder screen can now accept a separate index PDF that is inserted at the very front of the final binder. The intended index layout is the office's regular three-column Word/PDF table: numbered row, Description, and Date.
 
 - PDF.js extracts positioned text from every index page and looks for numbered table rows.
-- If the supplied index already contains link annotations, their rectangles are reused when they line up with detected rows; otherwise the app estimates the Description-cell rectangle from the table text/column positions.
+- If the supplied index already contains link annotations, their rectangles are reused when they line up with detected rows; otherwise the app sizes the clickable rectangle to the detected Description text footprint, with small click-friendly padding.
 - The mapping is positional: index row 1 -> content PDF at binder position 1, row 2 -> position 2, etc.
 - The link destination is the **first page of the content PDF**, not the green positional tab immediately before it.
 - Any existing Link annotations on the copied index pages are removed before new links are written. This avoids carrying stale destinations from an older binder into the rebuilt binder.

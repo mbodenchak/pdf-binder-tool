@@ -12,7 +12,7 @@
         <div>
           <p class="eyebrow">LOCAL PDF WORKSPACE</p>
           <h1>PDF Binder Tool</h1>
-          <p class="subtitle">Split combined PDFs, remove physical divider pages when needed, edit the document manifest, add linked index pages, and rebuild binders without uploading PDFs to a server.</p>
+          <p class="subtitle">Split combined PDFs, edit and reorder tabbed binders, add linked index pages, and rebuild binders without uploading PDFs to a server.</p>
         </div>
         <div class="privacy-badge">Files stay in this browser session</div>
       </header>
@@ -21,6 +21,7 @@
         <button class="mode-tab active" data-mode="split">Split PDF</button>
         <button class="mode-tab" data-mode="build">Build Binder</button>
         <button class="mode-tab" data-mode="insert">Insert Documents</button>
+        <button class="mode-tab" data-mode="reorder">Reorder Binder</button>
       </nav>
 
       <main>
@@ -361,6 +362,98 @@
                 </thead>
                 <tbody id="insert-preview-body">
                   <tr><td colspan="4" class="empty-cell">Open a binder to preview its existing positions.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+        </section>
+
+        <section id="reorder-mode" class="mode-panel">
+          <div class="toolbar card reorder-toolbar">
+            <label class="file-button">
+              Open existing binder
+              <input id="reorder-binder" type="file" accept="application/pdf,.pdf" hidden />
+            </label>
+            <label class="file-button">
+              Replace index PDF
+              <input id="reorder-index" type="file" accept="application/pdf,.pdf" hidden />
+            </label>
+            <button id="clear-reorder-index" disabled>Use existing index</button>
+            <button id="reset-reorder-order" disabled>Reset order</button>
+            <label class="inline-check">
+              <input id="reorder-create-bookmarks" type="checkbox" checked />
+              Rebuild INDEX/TAB bookmarks
+            </label>
+            <label class="inline-check">
+              <input id="reorder-refresh-index-links" type="checkbox" checked disabled />
+              Create/refresh index links
+            </label>
+            <label class="output-name-label">
+              Output
+              <input id="reorder-output-name" type="text" value="Reordered Binder.pdf" />
+            </label>
+            <button id="reorder-download" class="primary" disabled>Build reordered binder</button>
+            <span id="reorder-status" class="status">Open an existing tabbed binder to begin.</span>
+          </div>
+
+          <section class="card reorder-summary-panel">
+            <div class="panel-heading manifest-heading">
+              <div>
+                <h2>Existing binder structure</h2>
+                <p>The app detects positional TAB pages and treats the content between them as movable blocks. The physical TAB pages stay in positions 1, 2, 3, and so on while only the document content moves.</p>
+              </div>
+              <span id="reorder-analysis-summary" class="index-detection-summary">No binder loaded.</span>
+            </div>
+            <div id="reorder-structure-note" class="insert-structure-note">Load a binder to detect its tab positions.</div>
+          </section>
+
+          <section class="card reorder-index-panel">
+            <div class="panel-heading manifest-heading">
+              <div>
+                <h2>Replacement index</h2>
+                <p>Optional but recommended after reordering. Supply the updated index PDF for the new order. The app replaces detected old index pages, preserves other front matter, verifies rows 1 through N, recreates Description links, and makes INDEX the first bookmark.</p>
+              </div>
+              <span id="reorder-index-summary" class="index-detection-summary">Using the existing index/front matter.</span>
+            </div>
+            <div class="table-wrap">
+              <table class="index-table">
+                <thead>
+                  <tr>
+                    <th>Index row</th>
+                    <th>Index page</th>
+                    <th>Description detected</th>
+                    <th>Date detected</th>
+                    <th>Final destination</th>
+                  </tr>
+                </thead>
+                <tbody id="reorder-index-body">
+                  <tr><td colspan="5" class="empty-cell">Add a replacement index PDF to preview and validate its rows.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="card reorder-order-panel">
+            <div class="panel-heading manifest-heading">
+              <div>
+                <h2>Reorder existing content</h2>
+                <p>Drag rows, use the arrows, or type a new final position. Moving an item to position 13 shifts the intervening items automatically. The TAB page shown for each row is positional and does not move with the content.</p>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table class="reorder-table">
+                <thead>
+                  <tr>
+                    <th>Drag</th>
+                    <th>Final position</th>
+                    <th>Positional tab</th>
+                    <th>Content</th>
+                    <th>Original position / pages</th>
+                    <th>Move</th>
+                  </tr>
+                </thead>
+                <tbody id="reorder-body">
+                  <tr><td colspan="6" class="empty-cell">Open a binder to load its existing tabbed content.</td></tr>
                 </tbody>
               </table>
             </div>

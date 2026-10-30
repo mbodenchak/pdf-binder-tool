@@ -23,6 +23,7 @@ const els = {
   splitMode: document.querySelector('#split-mode'),
   buildMode: document.querySelector('#build-mode'),
   insertMode: document.querySelector('#insert-mode'),
+  reorderMode: document.querySelector('#reorder-mode'),
 
   binderInput: document.querySelector('#binder-input'),
   detectTabs: document.querySelector('#detect-tabs'),
@@ -98,6 +99,21 @@ const els = {
   insertStructureNote: document.querySelector('#insert-structure-note'),
   insertOperationsBody: document.querySelector('#insert-operations-body'),
   insertPreviewBody: document.querySelector('#insert-preview-body'),
+
+  reorderBinder: document.querySelector('#reorder-binder'),
+  reorderIndex: document.querySelector('#reorder-index'),
+  clearReorderIndex: document.querySelector('#clear-reorder-index'),
+  resetReorderOrder: document.querySelector('#reset-reorder-order'),
+  reorderCreateBookmarks: document.querySelector('#reorder-create-bookmarks'),
+  reorderRefreshIndexLinks: document.querySelector('#reorder-refresh-index-links'),
+  reorderOutputName: document.querySelector('#reorder-output-name'),
+  reorderDownload: document.querySelector('#reorder-download'),
+  reorderStatus: document.querySelector('#reorder-status'),
+  reorderAnalysisSummary: document.querySelector('#reorder-analysis-summary'),
+  reorderStructureNote: document.querySelector('#reorder-structure-note'),
+  reorderIndexSummary: document.querySelector('#reorder-index-summary'),
+  reorderIndexBody: document.querySelector('#reorder-index-body'),
+  reorderBody: document.querySelector('#reorder-body'),
 };
 
 const splitState = {
@@ -141,6 +157,23 @@ const insertState = {
   error: null,
 };
 
+const reorderState = {
+  file: null,
+  bytes: null,
+  pageCount: 0,
+  frontMatterPageIndexes: [],
+  sourceTabs: [],
+  sourceSections: [],
+  indexRows: [],
+  items: [],
+  replacementIndexFile: null,
+  replacementIndexInfo: null,
+  replacementIndexLoading: false,
+  analyzing: false,
+  error: null,
+  draggedItemId: null,
+};
+
 els.modeTabs.forEach((tab) => {
   tab.addEventListener('click', () => {
     const mode = tab.dataset.mode;
@@ -148,6 +181,7 @@ els.modeTabs.forEach((tab) => {
     els.splitMode.classList.toggle('active', mode === 'split');
     els.buildMode.classList.toggle('active', mode === 'build');
     els.insertMode.classList.toggle('active', mode === 'insert');
+    els.reorderMode.classList.toggle('active', mode === 'reorder');
   });
 });
 
@@ -270,6 +304,27 @@ els.clearInsertIndex.addEventListener('click', () => {
 els.insertCreateBookmarks.addEventListener('change', renderInsertWorkspace);
 els.insertRefreshIndexLinks.addEventListener('change', renderInsertWorkspace);
 els.insertDownload.addEventListener('click', buildInsertedBinder);
+
+els.reorderBinder.addEventListener('change', async (event) => {
+  const [file] = event.target.files;
+  if (file) await loadReorderBinder(file);
+  event.target.value = '';
+});
+els.reorderIndex.addEventListener('change', async (event) => {
+  const [file] = event.target.files;
+  if (file) await loadReorderReplacementIndex(file);
+  event.target.value = '';
+});
+els.clearReorderIndex.addEventListener('click', () => {
+  reorderState.replacementIndexFile = null;
+  reorderState.replacementIndexInfo = null;
+  reorderState.replacementIndexLoading = false;
+  renderReorderWorkspace();
+});
+els.resetReorderOrder.addEventListener('click', resetReorderOrder);
+els.reorderCreateBookmarks.addEventListener('change', renderReorderWorkspace);
+els.reorderRefreshIndexLinks.addEventListener('change', renderReorderWorkspace);
+els.reorderDownload.addEventListener('click', buildReorderedBinder);
 
 
 const SAFE_FILENAME_MAX_LENGTH = 120;
@@ -1774,13 +1829,41 @@ async function detectIndexRowsOnPage(page, pageIndex) {
     const date = joinIndexTextItems(dateItems);
     if (!description) return;
 
-    const descriptionLeft = Math.max(
-      pageX0,
-      descriptionItems.length ? Math.min(...descriptionItems.map((item) => item.x)) - 6 : candidate.item.x + 24,
+    // For an index with no usable existing link annotation, size the clickable
+    // rectangle to the actual Description text rather than the full table cell.
+    // PDF.js text-item y coordinates are baselines, so add modest ascent/descent
+    // allowances plus a small click-friendly padding around the union of all
+    // Description fragments in this row.
+    const horizontalPadding = 5;
+    const verticalPadding = 2.5;
+    const textLeft = descriptionItems.length
+      ? Math.min(...descriptionItems.map((item) => item.x))
+      : candidate.item.x + 24;
+    const textRight = descriptionItems.length
+      ? Math.max(...descriptionItems.map((item) => item.x + Math.max(item.width, 1)))
+      : textLeft + 20;
+    const textBottom = descriptionItems.length
+      ? Math.min(...descriptionItems.map((item) => item.y - item.height * 0.28))
+      : lower + 1;
+    const textTop = descriptionItems.length
+      ? Math.max(...descriptionItems.map((item) => item.y + item.height * 0.82))
+      : upper - 1;
+
+    const descriptionLeft = Math.max(pageX0, textLeft - horizontalPadding);
+    const descriptionRight = Math.min(
+      pageX1,
+      dateLeft - 4,
+      Math.max(descriptionLeft + 20, textRight + horizontalPadding),
     );
-    const descriptionRight = Math.min(pageX1, Math.max(descriptionLeft + 20, dateLeft - 10));
-    let rect = normalizePdfRect([descriptionLeft, lower + 1, descriptionRight, upper - 1]);
-    let rectSource = 'text-detection';
+    const descriptionBottom = Math.max(lower + 0.5, textBottom - verticalPadding);
+    const descriptionTop = Math.min(upper - 0.5, textTop + verticalPadding);
+    let rect = normalizePdfRect([
+      descriptionLeft,
+      descriptionBottom,
+      descriptionRight,
+      descriptionTop,
+    ]);
+    let rectSource = 'text-bounds';
 
     const linkMatch = existingLinks
       .map((link) => ({
@@ -3278,6 +3361,596 @@ async function buildInsertedBinder() {
     const currentValidation = validateInsertPlan(getInsertPlan());
     els.insertDownload.disabled = !currentValidation.ok;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Reorder Binder workflow (v0.11.0)
+// ---------------------------------------------------------------------------
+
+async function loadReorderBinder(file) {
+  if (!isPdfFile(file)) {
+    setReorderStatus('The existing binder must be a PDF file.', 'error');
+    return;
+  }
+
+  reorderState.file = file;
+  reorderState.bytes = null;
+  reorderState.pageCount = 0;
+  reorderState.frontMatterPageIndexes = [];
+  reorderState.sourceTabs = [];
+  reorderState.sourceSections = [];
+  reorderState.indexRows = [];
+  reorderState.items = [];
+  reorderState.replacementIndexFile = null;
+  reorderState.replacementIndexInfo = null;
+  reorderState.replacementIndexLoading = false;
+  reorderState.analyzing = true;
+  reorderState.error = null;
+  reorderState.draggedItemId = null;
+  renderReorderWorkspace();
+  setReorderStatus(`Analyzing ${file.name} for positional TAB pages…`);
+
+  let loadingTask = null;
+  try {
+    reorderState.bytes = new Uint8Array(await file.arrayBuffer());
+    loadingTask = pdfjsLib.getDocument({ data: reorderState.bytes.slice() });
+    const pdf = await loadingTask.promise;
+    reorderState.pageCount = pdf.numPages;
+
+    const pattern = /\bTAB\s*(?:NO\.?\s*)?[:#\-–—]?\s*([A-Z]|\d{1,3})\b/i;
+    const tabs = [];
+
+    for (let pageIndex = 0; pageIndex < pdf.numPages; pageIndex += 1) {
+      setReorderStatus(`Analyzing page ${pageIndex + 1} of ${pdf.numPages}…`);
+      const page = await pdf.getPage(pageIndex + 1);
+      const content = await page.getTextContent();
+      const text = content.items.map((item) => item.str).join(' ').replace(/\s+/g, ' ').trim();
+      const match = text.slice(0, 1800).match(pattern);
+      if (match) {
+        const token = String(match[1]).toUpperCase();
+        tabs.push({
+          pageIndex,
+          label: `TAB ${token}`,
+          detectedNumber: /^\d+$/.test(token) ? Number(token) : null,
+        });
+      }
+    }
+
+    if (!tabs.length) throw new Error('No TAB divider pages were detected. Use Split PDF / Build Binder for this document, or verify that the tab labels contain extractable text.');
+
+    tabs.sort((a, b) => a.pageIndex - b.pageIndex);
+    reorderState.sourceTabs = tabs.map((tab, index) => ({ ...tab, position: index + 1 }));
+    reorderState.frontMatterPageIndexes = Array.from({ length: tabs[0].pageIndex }, (_, index) => index);
+    reorderState.sourceSections = tabs.map((tab, index) => {
+      const nextTab = tabs[index + 1];
+      const startPageIndex = tab.pageIndex + 1;
+      const endPageIndex = nextTab ? nextTab.pageIndex - 1 : pdf.numPages - 1;
+      const pageIndexes = endPageIndex >= startPageIndex
+        ? Array.from({ length: endPageIndex - startPageIndex + 1 }, (_, offset) => startPageIndex + offset)
+        : [];
+      return {
+        originalPosition: index + 1,
+        tabPageIndex: tab.pageIndex,
+        tabLabel: tab.label,
+        pageIndexes,
+      };
+    });
+
+    const rows = [];
+    for (const pageIndex of reorderState.frontMatterPageIndexes) {
+      const page = await pdf.getPage(pageIndex + 1);
+      const pageRows = await detectIndexRowsOnPage(page, pageIndex);
+      rows.push(...pageRows);
+    }
+    rows.sort((a, b) => a.number - b.number || a.pageIndex - b.pageIndex || b.rect[3] - a.rect[3]);
+    reorderState.indexRows = rows;
+
+    reorderState.items = reorderState.sourceSections.map((section) => {
+      const matches = rows.filter((row) => row.number === section.originalPosition);
+      return {
+        id: makeId(),
+        originalPosition: section.originalPosition,
+        sourceSection: section,
+        description: matches.length === 1 && matches[0].description
+          ? matches[0].description
+          : `Existing ${section.tabLabel} content`,
+      };
+    });
+  } catch (error) {
+    console.error(error);
+    reorderState.error = friendlyError(error);
+    setReorderStatus(`Could not analyze the binder: ${friendlyError(error)}`, 'error');
+  } finally {
+    if (loadingTask) {
+      try {
+        await loadingTask.destroy();
+      } catch (cleanupError) {
+        console.warn(`Could not fully release PDF.js resources for ${file.name}.`, cleanupError);
+      }
+    }
+    reorderState.analyzing = false;
+    renderReorderWorkspace();
+  }
+}
+
+async function loadReorderReplacementIndex(file) {
+  if (!isPdfFile(file)) {
+    setReorderStatus('The replacement index must be a PDF file.', 'error');
+    return;
+  }
+
+  reorderState.replacementIndexFile = file;
+  reorderState.replacementIndexInfo = null;
+  reorderState.replacementIndexLoading = true;
+  renderReorderWorkspace();
+  setReorderStatus(`Analyzing replacement index ${file.name}…`);
+
+  let loadingTask = null;
+  try {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    loadingTask = pdfjsLib.getDocument({ data: bytes });
+    const pdf = await loadingTask.promise;
+    const rows = [];
+    let existingLinkRectsUsed = 0;
+
+    for (let pageIndex = 0; pageIndex < pdf.numPages; pageIndex += 1) {
+      const page = await pdf.getPage(pageIndex + 1);
+      const pageRows = await detectIndexRowsOnPage(page, pageIndex);
+      existingLinkRectsUsed += pageRows.filter((row) => row.rectSource === 'existing-link').length;
+      rows.push(...pageRows);
+    }
+
+    rows.sort((a, b) => a.number - b.number || a.pageIndex - b.pageIndex || b.rect[3] - a.rect[3]);
+    reorderState.replacementIndexInfo = {
+      pageCount: pdf.numPages,
+      rows,
+      existingLinkRectsUsed,
+    };
+  } catch (error) {
+    console.error(`Could not analyze replacement index ${file.name}.`, error);
+    reorderState.replacementIndexInfo = {
+      pageCount: 0,
+      rows: [],
+      existingLinkRectsUsed: 0,
+      error: friendlyError(error),
+    };
+  } finally {
+    if (loadingTask) {
+      try {
+        await loadingTask.destroy();
+      } catch (cleanupError) {
+        console.warn(`Could not fully release PDF.js resources for ${file.name}.`, cleanupError);
+      }
+    }
+    reorderState.replacementIndexLoading = false;
+    renderReorderWorkspace();
+  }
+}
+
+function getReorderActiveIndexRows() {
+  if (reorderState.replacementIndexFile) return reorderState.replacementIndexInfo?.rows || [];
+  return reorderState.indexRows || [];
+}
+
+function getReorderOldIndexPageIndexes() {
+  return [...new Set((reorderState.indexRows || []).map((row) => row.pageIndex))].sort((a, b) => a - b);
+}
+
+function getReorderIndexLinkState() {
+  const rows = getReorderActiveIndexRows();
+  const finalCount = reorderState.items.length;
+  const source = reorderState.replacementIndexFile ? 'replacement' : 'existing';
+  if (!rows.length || !finalCount) return { canRefresh: false, reason: 'No numbered index rows were detected.', source };
+  const counts = new Map();
+  rows.forEach((row) => counts.set(row.number, (counts.get(row.number) || 0) + 1));
+  if ([...counts.values()].some((count) => count !== 1)) return { canRefresh: false, reason: 'duplicate index row numbers were detected.', source };
+  if (rows.length !== finalCount) return { canRefresh: false, reason: `${rows.length} numbered row${rows.length === 1 ? '' : 's'} were detected for ${finalCount} final position${finalCount === 1 ? '' : 's'}.`, source };
+  for (let number = 1; number <= finalCount; number += 1) {
+    if (!counts.has(number)) return { canRefresh: false, reason: `index row ${number} is missing.`, source };
+  }
+  return { canRefresh: true, reason: '', source };
+}
+
+function isReorderChanged() {
+  return reorderState.items.some((item, index) => item.originalPosition !== index + 1);
+}
+
+function validateReorderPlan() {
+  const errors = [];
+  const warnings = [];
+
+  if (reorderState.analyzing) errors.push('Binder analysis is still running.');
+  if (reorderState.error) errors.push(reorderState.error);
+  if (!reorderState.file) errors.push('Open an existing binder.');
+  if (reorderState.file && !reorderState.sourceTabs.length && !reorderState.analyzing) errors.push('No positional TAB pages were detected.');
+  if (reorderState.replacementIndexLoading) errors.push('Replacement index analysis is still running.');
+  if (reorderState.replacementIndexInfo?.error) errors.push(`Could not analyze the replacement index: ${reorderState.replacementIndexInfo.error}`);
+
+  const numericMismatches = reorderState.sourceTabs.filter((tab) => tab.detectedNumber != null && tab.detectedNumber !== tab.position);
+  if (numericMismatches.length) {
+    warnings.push(`Detected ${numericMismatches.length} source tab label${numericMismatches.length === 1 ? '' : 's'} whose printed number does not match its positional order.`);
+  }
+
+  const indexCheck = getReorderIndexLinkState();
+  if (reorderState.replacementIndexFile) {
+    if (!reorderState.replacementIndexLoading && !reorderState.replacementIndexInfo?.error && !indexCheck.canRefresh) {
+      errors.push(`Replacement index does not match the binder: ${indexCheck.reason}`);
+    }
+    if (!reorderState.indexRows.length) {
+      warnings.push('No old index pages were detected in the existing binder. The replacement index will be inserted at the end of the preserved front matter, immediately before TAB 1.');
+    }
+  } else if (reorderState.indexRows.length && !indexCheck.canRefresh) {
+    warnings.push(`The existing index cannot be safely relinked: ${indexCheck.reason}`);
+  } else if (isReorderChanged() && reorderState.indexRows.length) {
+    warnings.push('The existing index text remains in its original order. Its links can be refreshed, but the visible descriptions/dates will be stale unless you supply an updated replacement index.');
+  }
+
+  return { ok: errors.length === 0, errors, warnings, indexCheck };
+}
+
+function renderReorderWorkspace() {
+  els.clearReorderIndex.disabled = !reorderState.replacementIndexFile;
+  els.resetReorderOrder.disabled = !reorderState.items.length || !isReorderChanged();
+
+  if (!reorderState.file) {
+    els.reorderAnalysisSummary.textContent = 'No binder loaded.';
+    els.reorderAnalysisSummary.className = 'index-detection-summary';
+    els.reorderStructureNote.textContent = 'Load a binder to detect its tab positions.';
+  } else if (reorderState.analyzing) {
+    els.reorderAnalysisSummary.textContent = `Analyzing ${reorderState.file.name}…`;
+    els.reorderAnalysisSummary.className = 'index-detection-summary';
+    els.reorderStructureNote.textContent = 'Reading page text to locate physical TAB dividers and inspect front-matter index rows.';
+  } else if (reorderState.error) {
+    els.reorderAnalysisSummary.textContent = `Could not analyze ${reorderState.file.name}.`;
+    els.reorderAnalysisSummary.className = 'index-detection-summary error';
+    els.reorderStructureNote.textContent = reorderState.error;
+  } else {
+    const indexNote = reorderState.indexRows.length
+      ? `${reorderState.indexRows.length} numbered index row${reorderState.indexRows.length === 1 ? '' : 's'} detected in front matter.`
+      : 'No numbered index rows detected in front matter.';
+    els.reorderAnalysisSummary.textContent = `${reorderState.file.name} — ${reorderState.pageCount} pages, ${reorderState.sourceTabs.length} TAB position${reorderState.sourceTabs.length === 1 ? '' : 's'}.`;
+    els.reorderAnalysisSummary.className = 'index-detection-summary success';
+    const oldIndexPages = getReorderOldIndexPageIndexes();
+    const frontMatterNote = reorderState.replacementIndexFile && oldIndexPages.length
+      ? `${Math.max(0, reorderState.frontMatterPageIndexes.length - oldIndexPages.length)} non-index front-matter page${Math.max(0, reorderState.frontMatterPageIndexes.length - oldIndexPages.length) === 1 ? '' : 's'} will be preserved; ${oldIndexPages.length} detected old index page${oldIndexPages.length === 1 ? '' : 's'} will be replaced.`
+      : `${reorderState.frontMatterPageIndexes.length} front-matter page${reorderState.frontMatterPageIndexes.length === 1 ? '' : 's'} will be preserved.`;
+    els.reorderStructureNote.textContent = `${frontMatterNote} ${indexNote}`;
+  }
+
+  const validation = validateReorderPlan();
+  renderReorderIndexPanel(validation);
+  renderReorderTable();
+
+  els.reorderRefreshIndexLinks.disabled = !validation.indexCheck.canRefresh || reorderState.replacementIndexLoading;
+  els.reorderDownload.disabled = !validation.ok;
+
+  if (reorderState.analyzing) return;
+  if (!reorderState.file) {
+    setReorderStatus('Open an existing tabbed binder to begin.');
+    return;
+  }
+  if (validation.errors.length) {
+    setReorderStatus(validation.errors[0], 'error');
+    return;
+  }
+
+  const changed = isReorderChanged();
+  const refreshWillRun = validation.indexCheck.canRefresh && els.reorderRefreshIndexLinks.checked;
+  const indexPhrase = reorderState.replacementIndexFile
+    ? refreshWillRun
+      ? ' The replacement index will replace the detected old index pages and its Description links will be created for the reordered content.'
+      : ' The replacement index will be used, but Description links are turned off.'
+    : reorderState.indexRows.length
+      ? refreshWillRun
+        ? ' Existing index links will be regenerated to the reordered content pages.'
+        : ' Existing detected index links will be removed.'
+      : '';
+  const warningPhrase = validation.warnings.length ? ` Warning: ${validation.warnings[0]}` : '';
+  setReorderStatus(`${reorderState.items.length} position${reorderState.items.length === 1 ? '' : 's'} loaded; order is ${changed ? 'modified' : 'unchanged'}.${indexPhrase}${warningPhrase}`, validation.warnings.length ? '' : 'success');
+}
+
+function renderReorderIndexPanel(validation = validateReorderPlan()) {
+  if (reorderState.replacementIndexLoading) {
+    els.reorderIndexSummary.textContent = `Analyzing ${reorderState.replacementIndexFile?.name || 'replacement index'}…`;
+    els.reorderIndexSummary.className = 'index-detection-summary';
+    els.reorderIndexBody.innerHTML = '<tr><td colspan="5" class="empty-cell">Detecting numbered rows and Description link rectangles…</td></tr>';
+    return;
+  }
+
+  if (reorderState.replacementIndexFile) {
+    const info = reorderState.replacementIndexInfo || { rows: [], pageCount: 0, existingLinkRectsUsed: 0 };
+    if (info.error) {
+      els.reorderIndexSummary.textContent = `Could not analyze ${reorderState.replacementIndexFile.name}.`;
+      els.reorderIndexSummary.className = 'index-detection-summary error';
+      els.reorderIndexBody.innerHTML = `<tr><td colspan="5" class="empty-cell">${escapeHtml(info.error)}</td></tr>`;
+      return;
+    }
+    const oldPages = getReorderOldIndexPageIndexes();
+    const replacementNote = oldPages.length
+      ? ` It will replace ${oldPages.length} detected old index page${oldPages.length === 1 ? '' : 's'}.`
+      : ' No old index pages were detected; it will be inserted immediately before TAB 1.';
+    const reusedNote = info.existingLinkRectsUsed
+      ? ` ${info.existingLinkRectsUsed} existing link rectangle${info.existingLinkRectsUsed === 1 ? '' : 's'} will be reused for placement.`
+      : '';
+    els.reorderIndexSummary.textContent = `${reorderState.replacementIndexFile.name} — ${info.pageCount} page${info.pageCount === 1 ? '' : 's'}, ${info.rows.length} numbered row${info.rows.length === 1 ? '' : 's'} detected.${replacementNote}${reusedNote}`;
+    els.reorderIndexSummary.className = `index-detection-summary${validation.indexCheck.canRefresh ? ' success' : ' error'}`;
+  } else if (reorderState.indexRows.length) {
+    els.reorderIndexSummary.textContent = `Using existing index — ${reorderState.indexRows.length} numbered row${reorderState.indexRows.length === 1 ? '' : 's'} detected.`;
+    els.reorderIndexSummary.className = `index-detection-summary${validation.indexCheck.canRefresh ? ' success' : ''}`;
+  } else {
+    els.reorderIndexSummary.textContent = 'Using existing front matter; no numbered index rows were detected.';
+    els.reorderIndexSummary.className = 'index-detection-summary';
+  }
+
+  const rows = getReorderActiveIndexRows();
+  if (!rows.length) {
+    els.reorderIndexBody.innerHTML = '<tr><td colspan="5" class="empty-cell">Add a replacement index PDF to preview and validate its rows.</td></tr>';
+    return;
+  }
+
+  els.reorderIndexBody.innerHTML = '';
+  rows.forEach((row) => {
+    const item = reorderState.items[row.number - 1];
+    const destination = item
+      ? `Position ${row.number} — ${item.description}`
+      : `No final content at position ${row.number}`;
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${row.number}</td>
+      <td>${row.pageIndex + 1}</td>
+      <td>${escapeHtml(row.description || '')}</td>
+      <td>${escapeHtml(row.date || '')}</td>
+      <td class="${item ? 'index-destination' : 'index-destination missing'}">${escapeHtml(destination)}</td>
+    `;
+    els.reorderIndexBody.append(tr);
+  });
+}
+
+function renderReorderTable() {
+  if (!reorderState.items.length) {
+    els.reorderBody.innerHTML = '<tr><td colspan="6" class="empty-cell">Open a binder to load its existing tabbed content.</td></tr>';
+    return;
+  }
+
+  els.reorderBody.innerHTML = '';
+  reorderState.items.forEach((item, index) => {
+    const position = index + 1;
+    const sourceTab = reorderState.sourceTabs[index];
+    const pages = item.sourceSection.pageIndexes;
+    const pageRange = pages.length
+      ? `source pages ${pages[0] + 1}${pages.length > 1 ? `–${pages[pages.length - 1] + 1}` : ''}`
+      : 'no content pages';
+    const moved = item.originalPosition !== position;
+    const row = document.createElement('tr');
+    row.dataset.itemId = item.id;
+    if (moved) row.classList.add('reorder-moved');
+    row.innerHTML = `
+      <td><span class="drag-handle" draggable="true" title="Drag to reorder" aria-label="Drag to reorder">☰</span></td>
+      <td><input class="reorder-position-input" type="number" min="1" max="${reorderState.items.length}" value="${position}" title="Type a new final position and press Enter" aria-label="Final position" /></td>
+      <td><strong>${escapeHtml(sourceTab?.label || `TAB ${position}`)}</strong><span class="tab-bookmark">binder page ${(sourceTab?.pageIndex ?? 0) + 1}</span></td>
+      <td>${escapeHtml(item.description)}</td>
+      <td>Original ${item.originalPosition}<span class="tab-bookmark">${escapeHtml(pageRange)}</span></td>
+      <td>
+        <div class="order-buttons">
+          <button type="button" data-action="up" ${index === 0 ? 'disabled' : ''} aria-label="Move content up">↑</button>
+          <button type="button" data-action="down" ${index === reorderState.items.length - 1 ? 'disabled' : ''} aria-label="Move content down">↓</button>
+        </div>
+      </td>
+    `;
+
+    const positionInput = row.querySelector('.reorder-position-input');
+    positionInput.addEventListener('focus', () => {
+      try { positionInput.select(); } catch { /* Number inputs may not expose selection in every browser. */ }
+    });
+    positionInput.addEventListener('change', () => moveReorderItemToPosition(item.id, positionInput.value));
+    positionInput.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        moveReorderItemToPosition(item.id, positionInput.value);
+      } else if (event.key === 'Escape') {
+        positionInput.value = String(position);
+        positionInput.blur();
+      }
+    });
+    row.querySelector('[data-action="up"]').addEventListener('click', () => moveReorderItem(index, -1));
+    row.querySelector('[data-action="down"]').addEventListener('click', () => moveReorderItem(index, 1));
+    attachReorderDragEvents(row, item.id);
+    els.reorderBody.append(row);
+  });
+}
+
+function attachReorderDragEvents(row, itemId) {
+  const handle = row.querySelector('.drag-handle');
+  handle.addEventListener('dragstart', (event) => {
+    reorderState.draggedItemId = itemId;
+    row.classList.add('dragging');
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('text/plain', itemId);
+  });
+  handle.addEventListener('dragend', () => {
+    reorderState.draggedItemId = null;
+    [...els.reorderBody.querySelectorAll('tr')].forEach((item) => item.classList.remove('dragging', 'drag-over'));
+  });
+
+  row.addEventListener('dragover', (event) => {
+    if (!reorderState.draggedItemId || reorderState.draggedItemId === itemId) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'move';
+    row.classList.add('drag-over');
+  });
+  row.addEventListener('dragleave', () => row.classList.remove('drag-over'));
+  row.addEventListener('drop', (event) => {
+    event.preventDefault();
+    row.classList.remove('drag-over');
+    const draggedId = reorderState.draggedItemId || event.dataTransfer.getData('text/plain');
+    reorderReorderItem(draggedId, itemId);
+  });
+}
+
+function reorderReorderItem(draggedId, targetId) {
+  const from = reorderState.items.findIndex((item) => item.id === draggedId);
+  const to = reorderState.items.findIndex((item) => item.id === targetId);
+  if (from < 0 || to < 0 || from === to) return;
+  const [item] = reorderState.items.splice(from, 1);
+  reorderState.items.splice(to, 0, item);
+  renderReorderWorkspace();
+}
+
+function moveReorderItemToPosition(itemId, requestedPosition) {
+  const from = reorderState.items.findIndex((item) => item.id === itemId);
+  if (from < 0 || !reorderState.items.length) return;
+  const parsed = Number.parseInt(String(requestedPosition), 10);
+  const position = Math.min(reorderState.items.length, Math.max(1, Number.isFinite(parsed) ? parsed : from + 1));
+  const to = position - 1;
+  if (from === to) {
+    renderReorderWorkspace();
+    return;
+  }
+  const [item] = reorderState.items.splice(from, 1);
+  reorderState.items.splice(to, 0, item);
+  renderReorderWorkspace();
+}
+
+function moveReorderItem(index, delta) {
+  const target = index + delta;
+  if (target < 0 || target >= reorderState.items.length) return;
+  [reorderState.items[index], reorderState.items[target]] = [reorderState.items[target], reorderState.items[index]];
+  renderReorderWorkspace();
+}
+
+function resetReorderOrder() {
+  reorderState.items.sort((a, b) => a.originalPosition - b.originalPosition);
+  renderReorderWorkspace();
+}
+
+async function buildReorderedBinder() {
+  const validation = validateReorderPlan();
+  if (!validation.ok) {
+    renderReorderWorkspace();
+    return;
+  }
+
+  els.reorderDownload.disabled = true;
+  try {
+    const output = await createOutputPdfDocument();
+    const source = await PDFDocument.load(reorderState.bytes.slice(), { updateMetadata: false });
+    const bookmarks = [];
+    const contentPageTargets = [];
+    const frontMatterMap = new Map();
+    const oldIndexPageIndexes = getReorderOldIndexPageIndexes();
+    const oldIndexPageSet = new Set(oldIndexPageIndexes);
+    let replacementIndexStart = null;
+    let replacementIndexPageCount = 0;
+    let replacementInserted = false;
+
+    const appendReplacementIndex = async () => {
+      if (!reorderState.replacementIndexFile || replacementInserted) return;
+      replacementIndexStart = output.getPageCount();
+      setReorderStatus(`Adding replacement index: ${reorderState.replacementIndexFile.name}…`);
+      const result = await appendIndexPdfToOutput(output, reorderState.replacementIndexFile);
+      replacementIndexPageCount = result.pageCount;
+      replacementInserted = true;
+    };
+
+    if (reorderState.frontMatterPageIndexes.length) {
+      setReorderStatus(`Processing ${reorderState.frontMatterPageIndexes.length} front-matter page${reorderState.frontMatterPageIndexes.length === 1 ? '' : 's'}…`);
+      for (const sourcePageIndex of reorderState.frontMatterPageIndexes) {
+        if (reorderState.replacementIndexFile && oldIndexPageSet.has(sourcePageIndex)) {
+          await appendReplacementIndex();
+          continue;
+        }
+        const [copiedPage] = await output.copyPages(source, [sourcePageIndex]);
+        output.addPage(copiedPage);
+        const outputPageIndex = output.getPageCount() - 1;
+        frontMatterMap.set(sourcePageIndex, outputPageIndex);
+        if (!reorderState.replacementIndexFile && oldIndexPageSet.has(sourcePageIndex)) {
+          removeLinkAnnotations(output, copiedPage);
+        }
+      }
+    }
+
+    if (reorderState.replacementIndexFile && !replacementInserted) {
+      await appendReplacementIndex();
+    }
+
+    if (els.reorderCreateBookmarks.checked) {
+      if (reorderState.replacementIndexFile && replacementIndexStart != null) {
+        bookmarks.push({ title: 'INDEX', pageIndex: replacementIndexStart });
+      } else if (reorderState.indexRows.length) {
+        const firstIndexSourcePage = Math.min(...reorderState.indexRows.map((row) => row.pageIndex));
+        const indexOutputPage = frontMatterMap.get(firstIndexSourcePage);
+        if (indexOutputPage != null) bookmarks.push({ title: 'INDEX', pageIndex: indexOutputPage });
+      }
+    }
+
+    for (let i = 0; i < reorderState.items.length; i += 1) {
+      const position = i + 1;
+      const item = reorderState.items[i];
+      const sourceTab = reorderState.sourceTabs[i];
+      const tabPageIndex = output.getPageCount();
+
+      setReorderStatus(`Adding positional TAB ${position}…`);
+      await appendSourcePageIndexes(output, source, [sourceTab.pageIndex]);
+
+      if (els.reorderCreateBookmarks.checked) {
+        bookmarks.push({ title: sourceTab.label || `TAB ${position}`, pageIndex: tabPageIndex });
+      }
+
+      const contentPageIndex = output.getPageCount();
+      contentPageTargets.push(contentPageIndex);
+      setReorderStatus(`Adding content from original position ${item.originalPosition} at final position ${position}…`);
+      await appendSourcePageIndexes(output, source, item.sourceSection.pageIndexes);
+    }
+
+    const indexState = getReorderIndexLinkState();
+    const activeIndexRows = getReorderActiveIndexRows();
+    let refreshedLinks = 0;
+    if (indexState.canRefresh && els.reorderRefreshIndexLinks.checked) {
+      const actionWord = reorderState.replacementIndexFile ? 'Creating' : 'Refreshing';
+      setReorderStatus(`${actionWord} ${activeIndexRows.length} index link${activeIndexRows.length === 1 ? '' : 's'}…`);
+      activeIndexRows.forEach((row) => {
+        const sourcePageIndex = reorderState.replacementIndexFile
+          ? (replacementIndexStart == null ? null : replacementIndexStart + row.pageIndex)
+          : frontMatterMap.get(row.pageIndex);
+        const targetPageIndex = contentPageTargets[row.number - 1];
+        if (sourcePageIndex == null || targetPageIndex == null) throw new Error(`Could not map index row ${row.number}.`);
+        addInternalLinkAnnotation(output, output.getPage(sourcePageIndex), row.rect, targetPageIndex);
+        refreshedLinks += 1;
+      });
+    }
+
+    if (bookmarks.length) {
+      setReorderStatus(`Creating ${bookmarks.length} top-level bookmark${bookmarks.length === 1 ? '' : 's'}…`);
+      addTopLevelBookmarks(output, bookmarks);
+    }
+
+    setReorderStatus('Saving reordered binder…');
+    const bytes = await output.save();
+    const filename = sanitizePdfFilename(els.reorderOutputName.value || 'Reordered Binder.pdf');
+    downloadBlob(new Blob([bytes], { type: 'application/pdf' }), filename);
+
+    const movedCount = reorderState.items.filter((item, index) => item.originalPosition !== index + 1).length;
+    let indexPhrase = '';
+    if (reorderState.replacementIndexFile) {
+      indexPhrase = ` Replacement index applied (${replacementIndexPageCount} page${replacementIndexPageCount === 1 ? '' : 's'})`;
+      if (refreshedLinks) indexPhrase += ` with ${refreshedLinks} linked entr${refreshedLinks === 1 ? 'y' : 'ies'}`;
+      indexPhrase += '.';
+    } else if (refreshedLinks) {
+      indexPhrase = ` ${refreshedLinks} existing index entr${refreshedLinks === 1 ? 'y was' : 'ies were'} relinked to the reordered content.`;
+    }
+    setReorderStatus(`Reordered binder downloaded. ${movedCount} content block${movedCount === 1 ? '' : 's'} changed position.${indexPhrase}`, 'success');
+  } catch (error) {
+    console.error(error);
+    setReorderStatus(`Could not build the reordered binder: ${friendlyError(error)}`, 'error');
+  } finally {
+    const currentValidation = validateReorderPlan();
+    els.reorderDownload.disabled = !currentValidation.ok;
+  }
+}
+
+function setReorderStatus(message, type = '') {
+  els.reorderStatus.textContent = message;
+  els.reorderStatus.className = `status ${type}`.trim();
 }
 
 function setInsertStatus(message, type = '') {
