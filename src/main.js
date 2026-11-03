@@ -2449,8 +2449,29 @@ async function detectIndexRowsOnPage(page, pageIndex) {
       && number > 0
       && number < 1000
       && item.x < pageX0 + pageWidth * 0.24
-      && (headerY == null || item.y < headerY - 2))
-    .sort((a, b) => b.item.y - a.item.y || a.item.x - b.item.x);
+      && (headerY == null || item.y < headerY - 2));
+
+  // Numeric text can legitimately begin a Description (for example, "504 Plan").
+  // A broad left-page cutoff alone can therefore create a fake index row. Infer the
+  // actual number-column x track from the densest cluster of numeric candidates and
+  // keep only candidates aligned with that track. This tolerates the few-point shift
+  // between one- and two-digit right-aligned row numbers while rejecting numbers in
+  // the Description column.
+  if (numberItems.length >= 2) {
+    const clusterTolerance = Math.max(12, pageWidth * 0.025);
+    const candidatesByDensity = numberItems.map((candidate) => {
+      const cluster = numberItems.filter((other) => Math.abs(other.item.x - candidate.item.x) <= clusterTolerance);
+      const xs = cluster.map((entry) => entry.item.x).sort((a, b) => a - b);
+      const center = xs[Math.floor(xs.length / 2)];
+      return { candidate, cluster, center };
+    }).sort((a, b) => b.cluster.length - a.cluster.length || a.center - b.center);
+
+    const numberColumn = candidatesByDensity[0];
+    const keepTolerance = Math.max(18, pageWidth * 0.035);
+    numberItems = numberItems.filter((candidate) => Math.abs(candidate.item.x - numberColumn.center) <= keepTolerance);
+  }
+
+  numberItems.sort((a, b) => b.item.y - a.item.y || a.item.x - b.item.x);
 
   // Keep only one visible number marker per row number/page location.
   numberItems = numberItems.filter((candidate, index, list) => !list.slice(0, index).some((prior) => (
