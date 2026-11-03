@@ -22,6 +22,7 @@
         <button class="mode-tab" data-mode="build">Build Binder</button>
         <button class="mode-tab" data-mode="insert">Insert Documents</button>
         <button class="mode-tab" data-mode="reorder">Reorder Binder</button>
+        <button class="mode-tab" data-mode="sync">Sync to New Index</button>
       </nav>
 
       <main>
@@ -459,6 +460,84 @@
             </div>
           </section>
         </section>
+
+        <section id="sync-mode" class="mode-panel">
+          <div class="toolbar card sync-toolbar">
+            <label class="file-button">
+              Open existing binder
+              <input id="sync-binder" type="file" accept="application/pdf,.pdf" hidden />
+            </label>
+            <label class="file-button">
+              New index PDF
+              <input id="sync-index" type="file" accept="application/pdf,.pdf" hidden />
+            </label>
+            <label class="file-button">
+              Add new documents
+              <input id="sync-files" type="file" accept="application/pdf,.pdf" multiple hidden />
+            </label>
+            <button id="clear-sync-files" disabled>Clear new PDFs</button>
+            <label class="file-button">
+              Add extra tab PDFs
+              <input id="sync-tabs" type="file" accept="application/pdf,.pdf" multiple hidden />
+            </label>
+            <button id="clear-sync-tabs" disabled>Clear extra tabs</button>
+            <label class="inline-check">
+              <input id="sync-create-bookmarks" type="checkbox" checked />
+              Rebuild INDEX/TAB bookmarks
+            </label>
+            <label class="output-name-label">
+              Output
+              <input id="sync-output-name" type="text" value="Synced Binder.pdf" />
+            </label>
+            <button id="sync-download" class="primary" disabled>Build synced binder</button>
+            <span id="sync-status" class="status">Open an existing binder and a new index to begin.</span>
+          </div>
+
+          <section class="card sync-summary-panel">
+            <div class="panel-heading manifest-heading">
+              <div>
+                <h2>Compare old binder to new index</h2>
+                <p>The new index defines the intended final order. The app sequence-aligns its descriptions against the old index, then proposes which existing content or newly supplied PDF belongs at each final position. Review the proposal before building.</p>
+              </div>
+              <span id="sync-analysis-summary" class="index-detection-summary">No binder loaded.</span>
+            </div>
+            <div id="sync-structure-note" class="insert-structure-note">Load the old binder, the updated index PDF, and any new documents.</div>
+          </section>
+
+          <section class="card sync-proposal-panel">
+            <div class="panel-heading manifest-heading">
+              <div>
+                <h2>Proposed final mapping</h2>
+                <p>Each new-index row must resolve to exactly one source. Strong matches are proposed automatically; uncertain rows remain reviewable. You can override any proposal using the Source dropdown.</p>
+              </div>
+              <button id="sync-rematch" type="button" disabled>Re-run matching</button>
+            </div>
+            <div class="table-wrap">
+              <table class="sync-table">
+                <thead>
+                  <tr>
+                    <th>Final position</th>
+                    <th>New index entry</th>
+                    <th>Date</th>
+                    <th>Source</th>
+                    <th>Confidence</th>
+                  </tr>
+                </thead>
+                <tbody id="sync-body">
+                  <tr><td colspan="5" class="empty-cell">Load an existing binder and a new index to generate a proposal.</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <div id="sync-omissions" class="sync-omissions is-hidden">
+              <label class="inline-check">
+                <input id="sync-approve-omissions" type="checkbox" />
+                I approve omitting existing binder documents that do not appear in the new index.
+              </label>
+              <div id="sync-omissions-list" class="insert-structure-note"></div>
+            </div>
+          </section>
+        </section>
+
       </main>
     </div>
 

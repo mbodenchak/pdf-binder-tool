@@ -1,4 +1,31 @@
-# PDF Binder Tool — browser-only MVP v0.12.0
+# PDF Binder Tool — browser-only MVP v0.13.0
+
+## v0.13.0 — Sync Binder to New Index
+
+This release adds a fifth top-level workflow, **Sync to New Index**, for updating an existing tabbed binder from a newly revised index and a set of new PDFs. The new index is treated as the intended final order; the old binder supplies existing content; newly supplied PDFs fill rows that do not align to old content.
+
+- Open the existing binder, then load the new index PDF and any newly added documents.
+- The app compares the old and new numbered index descriptions with sequence-aware fuzzy matching, so large blocks shifted by inserted rows remain aligned instead of being treated as unrelated documents. Date matches are used as an additional signal when available.
+- Unmatched new-index rows are compared to the filenames of the supplied new PDFs. Existing filename conventions (`^` for `:` and `_` for `/`) are normalized for matching.
+- Every proposed row remains editable through a Source dropdown. Automatic matches are labeled Strong, Good, Review, or Uncertain; manual overrides are labeled Manual.
+- Each source PDF/content block can be used only once. Build is blocked for unassigned final rows, duplicate source assignments, unused newly supplied PDFs, missing positional tabs, or an index whose numbered rows are not sequential and unique.
+- Existing binder documents that do not appear in the new index are never silently deleted. The app lists them and requires an explicit omission approval before Build is enabled.
+- The new index replaces detected old index pages while unrelated front matter is preserved. Its Description links are regenerated to the first content page after each final positional tab, using Fit Page.
+- INDEX is regenerated as the first bookmark followed by positional TAB bookmarks.
+- If the new index creates positions beyond the original binder's tab count, extra tab PDFs are required just as in Insert Documents.
+
+### Typical sync workflow
+
+1. Open the old completed binder.
+2. Add the updated index PDF.
+3. Add the PDFs for newly inserted index entries.
+4. Add any extra positional tab PDFs required by the larger final binder.
+5. Review the proposed mapping. Correct any Review/Uncertain row with the Source dropdown.
+6. If the new index intentionally removes old documents, review the omission list and approve it.
+7. Build the synced binder.
+
+This first Sync implementation intentionally requires parseable sequential numbered rows in both the old and new indexes because those descriptions are the evidence used for automatic structural comparison. Atypical/manual index mapping remains available in the existing Build, Insert, and Reorder workflows.
+
 
 
 ## v0.12.0 — Manual mapping for atypical indexes

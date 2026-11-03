@@ -118,6 +118,25 @@ const els = {
   manualReorderIndex: document.querySelector('#manual-reorder-index'),
   reorderBody: document.querySelector('#reorder-body'),
 
+  syncMode: document.querySelector('#sync-mode'),
+  syncBinder: document.querySelector('#sync-binder'),
+  syncIndex: document.querySelector('#sync-index'),
+  syncFiles: document.querySelector('#sync-files'),
+  clearSyncFiles: document.querySelector('#clear-sync-files'),
+  syncTabs: document.querySelector('#sync-tabs'),
+  clearSyncTabs: document.querySelector('#clear-sync-tabs'),
+  syncCreateBookmarks: document.querySelector('#sync-create-bookmarks'),
+  syncOutputName: document.querySelector('#sync-output-name'),
+  syncDownload: document.querySelector('#sync-download'),
+  syncStatus: document.querySelector('#sync-status'),
+  syncAnalysisSummary: document.querySelector('#sync-analysis-summary'),
+  syncStructureNote: document.querySelector('#sync-structure-note'),
+  syncRematch: document.querySelector('#sync-rematch'),
+  syncBody: document.querySelector('#sync-body'),
+  syncOmissions: document.querySelector('#sync-omissions'),
+  syncApproveOmissions: document.querySelector('#sync-approve-omissions'),
+  syncOmissionsList: document.querySelector('#sync-omissions-list'),
+
   manualIndexDialog: document.querySelector('#manual-index-dialog'),
   closeManualIndex: document.querySelector('#close-manual-index'),
   cancelManualIndex: document.querySelector('#cancel-manual-index'),
@@ -195,6 +214,25 @@ const reorderState = {
   draggedItemId: null,
 };
 
+const syncState = {
+  file: null,
+  bytes: null,
+  pageCount: 0,
+  frontMatterPageIndexes: [],
+  sourceTabs: [],
+  sourceSections: [],
+  oldIndexRows: [],
+  newIndexFile: null,
+  newIndexInfo: null,
+  indexLoading: false,
+  newFiles: [],
+  extraTabs: [],
+  assignments: new Map(),
+  approveOmissions: false,
+  analyzing: false,
+  error: null,
+};
+
 const manualIndexState = {
   mode: null,
   sourceKey: '',
@@ -220,6 +258,7 @@ els.modeTabs.forEach((tab) => {
     els.buildMode.classList.toggle('active', mode === 'build');
     els.insertMode.classList.toggle('active', mode === 'insert');
     els.reorderMode.classList.toggle('active', mode === 'reorder');
+    els.syncMode.classList.toggle('active', mode === 'sync');
   });
 });
 
@@ -382,6 +421,44 @@ els.resetReorderOrder.addEventListener('click', resetReorderOrder);
 els.reorderCreateBookmarks.addEventListener('change', renderReorderWorkspace);
 els.reorderRefreshIndexLinks.addEventListener('change', renderReorderWorkspace);
 els.reorderDownload.addEventListener('click', buildReorderedBinder);
+
+els.syncBinder.addEventListener('change', async (event) => {
+  const [file] = event.target.files;
+  if (file) await loadSyncBinder(file);
+  event.target.value = '';
+});
+els.syncIndex.addEventListener('change', async (event) => {
+  const [file] = event.target.files;
+  if (file) await loadSyncIndex(file);
+  event.target.value = '';
+});
+els.syncFiles.addEventListener('change', (event) => {
+  addSyncFiles([...event.target.files]);
+  event.target.value = '';
+});
+els.clearSyncFiles.addEventListener('click', () => {
+  syncState.newFiles = [];
+  recomputeSyncProposal({ preserveManual: false });
+  renderSyncWorkspace();
+});
+els.syncTabs.addEventListener('change', async (event) => {
+  await addSyncTabs([...event.target.files]);
+  event.target.value = '';
+});
+els.clearSyncTabs.addEventListener('click', () => {
+  syncState.extraTabs = [];
+  renderSyncWorkspace();
+});
+els.syncRematch.addEventListener('click', () => {
+  recomputeSyncProposal({ preserveManual: false });
+  renderSyncWorkspace();
+});
+els.syncApproveOmissions.addEventListener('change', () => {
+  syncState.approveOmissions = els.syncApproveOmissions.checked;
+  renderSyncWorkspace();
+});
+els.syncCreateBookmarks.addEventListener('change', renderSyncWorkspace);
+els.syncDownload.addEventListener('click', buildSyncedBinder);
 
 
 
@@ -4011,6 +4088,691 @@ async function buildInsertedBinder() {
 }
 
 // ---------------------------------------------------------------------------
+// Sync Binder to New Index workflow (v0.13.0)
+// ---------------------------------------------------------------------------
+
+async function loadSyncBinder(file) {
+  if (!isPdfFile(file)) {
+    setSyncStatus('The existing binder must be a PDF file.', 'error');
+    return;
+  }
+
+  syncState.file = file;
+  syncState.bytes = null;
+  syncState.pageCount = 0;
+  syncState.frontMatterPageIndexes = [];
+  syncState.sourceTabs = [];
+  syncState.sourceSections = [];
+  syncState.oldIndexRows = [];
+  syncState.assignments = new Map();
+  syncState.approveOmissions = false;
+  els.syncApproveOmissions.checked = false;
+  syncState.analyzing = true;
+  syncState.error = null;
+  renderSyncWorkspace();
+  setSyncStatus(`Analyzing ${file.name} for positional TAB pages and the old index…`);
+
+  let loadingTask = null;
+  try {
+    syncState.bytes = new Uint8Array(await file.arrayBuffer());
+    loadingTask = pdfjsLib.getDocument({ data: syncState.bytes.slice() });
+    const pdf = await loadingTask.promise;
+    syncState.pageCount = pdf.numPages;
+
+    const pattern = /\bTAB\s*(?:NO\.?\s*)?[:#\-–—]?\s*([A-Z]|\d{1,3})\b/i;
+    const tabs = [];
+    for (let pageIndex = 0; pageIndex < pdf.numPages; pageIndex += 1) {
+      setSyncStatus(`Analyzing old binder page ${pageIndex + 1} of ${pdf.numPages}…`);
+      const page = await pdf.getPage(pageIndex + 1);
+      const content = await page.getTextContent();
+      const text = content.items.map((item) => item.str).join(' ').replace(/\s+/g, ' ').trim();
+      const match = text.slice(0, 1800).match(pattern);
+      if (match) {
+        const token = String(match[1]).toUpperCase();
+        tabs.push({
+          pageIndex,
+          label: `TAB ${token}`,
+          detectedNumber: /^\d+$/.test(token) ? Number(token) : null,
+        });
+      }
+    }
+    if (!tabs.length) throw new Error('No TAB divider pages were detected in the old binder.');
+
+    tabs.sort((a, b) => a.pageIndex - b.pageIndex);
+    syncState.sourceTabs = tabs.map((tab, index) => ({ ...tab, position: index + 1 }));
+    syncState.frontMatterPageIndexes = Array.from({ length: tabs[0].pageIndex }, (_, index) => index);
+    syncState.sourceSections = tabs.map((tab, index) => {
+      const nextTab = tabs[index + 1];
+      const startPageIndex = tab.pageIndex + 1;
+      const endPageIndex = nextTab ? nextTab.pageIndex - 1 : pdf.numPages - 1;
+      const pageIndexes = endPageIndex >= startPageIndex
+        ? Array.from({ length: endPageIndex - startPageIndex + 1 }, (_, offset) => startPageIndex + offset)
+        : [];
+      return {
+        originalPosition: index + 1,
+        tabPageIndex: tab.pageIndex,
+        tabLabel: tab.label,
+        pageIndexes,
+      };
+    });
+
+    const rows = [];
+    for (const pageIndex of syncState.frontMatterPageIndexes) {
+      const page = await pdf.getPage(pageIndex + 1);
+      const pageRows = await detectIndexRowsOnPage(page, pageIndex);
+      rows.push(...pageRows);
+    }
+    rows.sort((a, b) => a.number - b.number || a.pageIndex - b.pageIndex || b.rect[3] - a.rect[3]);
+    syncState.oldIndexRows = rows;
+  } catch (error) {
+    console.error(error);
+    syncState.error = friendlyError(error);
+    setSyncStatus(`Could not analyze the old binder: ${friendlyError(error)}`, 'error');
+  } finally {
+    if (loadingTask) {
+      try { await loadingTask.destroy(); } catch (cleanupError) { console.warn('Could not fully release old-binder PDF.js resources.', cleanupError); }
+    }
+    syncState.analyzing = false;
+    recomputeSyncProposal();
+    renderSyncWorkspace();
+  }
+}
+
+async function loadSyncIndex(file) {
+  if (!isPdfFile(file)) {
+    setSyncStatus('The new index must be a PDF file.', 'error');
+    return;
+  }
+  syncState.newIndexFile = file;
+  syncState.newIndexInfo = null;
+  syncState.indexLoading = true;
+  syncState.assignments = new Map();
+  renderSyncWorkspace();
+  setSyncStatus(`Analyzing new index ${file.name}…`);
+
+  let loadingTask = null;
+  try {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    loadingTask = pdfjsLib.getDocument({ data: bytes });
+    const pdf = await loadingTask.promise;
+    const rows = [];
+    let existingLinkRectsUsed = 0;
+    for (let pageIndex = 0; pageIndex < pdf.numPages; pageIndex += 1) {
+      const page = await pdf.getPage(pageIndex + 1);
+      const pageRows = await detectIndexRowsOnPage(page, pageIndex);
+      existingLinkRectsUsed += pageRows.filter((row) => row.rectSource === 'existing-link').length;
+      rows.push(...pageRows);
+    }
+    rows.sort((a, b) => a.number - b.number || a.pageIndex - b.pageIndex || b.rect[3] - a.rect[3]);
+    syncState.newIndexInfo = { pageCount: pdf.numPages, rows, existingLinkRectsUsed };
+  } catch (error) {
+    console.error(error);
+    syncState.newIndexInfo = { pageCount: 0, rows: [], existingLinkRectsUsed: 0, error: friendlyError(error) };
+  } finally {
+    if (loadingTask) {
+      try { await loadingTask.destroy(); } catch (cleanupError) { console.warn('Could not fully release new-index PDF.js resources.', cleanupError); }
+    }
+    syncState.indexLoading = false;
+    recomputeSyncProposal();
+    renderSyncWorkspace();
+  }
+}
+
+function addSyncFiles(files) {
+  const pdfs = files.filter(isPdfFile);
+  pdfs.forEach((file) => {
+    syncState.newFiles.push({
+      id: makeId(),
+      file,
+      description: descriptionFromFilenameOrPath(file.name) || humanizeFilename(file.name),
+    });
+  });
+  recomputeSyncProposal();
+  renderSyncWorkspace();
+}
+
+async function addSyncTabs(files) {
+  const pdfs = files.filter(isPdfFile);
+  const entries = pdfs.map((file) => ({
+    id: makeId(),
+    file,
+    tabNumber: parseTabNumberFromText(file.name),
+    bookmarkTitle: fallbackBookmarkTitle(file.name),
+    bookmarkSource: 'filename',
+    bookmarkStatus: 'reading',
+  }));
+  syncState.extraTabs.push(...entries);
+  sortSyncTabs();
+  renderSyncWorkspace();
+  await Promise.all(entries.map(readTabBookmarkTitle));
+  entries.forEach((entry) => {
+    if (entry.tabNumber == null) entry.tabNumber = parseTabNumberFromText(entry.bookmarkTitle);
+  });
+  sortSyncTabs();
+  renderSyncWorkspace();
+}
+
+function sortSyncTabs() {
+  syncState.extraTabs.sort((a, b) => {
+    if (a.tabNumber != null && b.tabNumber != null && a.tabNumber !== b.tabNumber) return a.tabNumber - b.tabNumber;
+    if (a.tabNumber != null && b.tabNumber == null) return -1;
+    if (a.tabNumber == null && b.tabNumber != null) return 1;
+    return naturalCompare(a.file.name, b.file.name);
+  });
+}
+
+function validateSequentialIndexRows(rows, expectedCount = null) {
+  if (!rows.length) return { ok: false, reason: 'no numbered index rows were detected.' };
+  const counts = new Map();
+  rows.forEach((row) => counts.set(row.number, (counts.get(row.number) || 0) + 1));
+  if ([...counts.values()].some((count) => count !== 1)) return { ok: false, reason: 'duplicate index row numbers were detected.' };
+  const count = expectedCount == null ? rows.length : expectedCount;
+  if (rows.length !== count) return { ok: false, reason: `${rows.length} rows were detected for ${count} expected positions.` };
+  for (let i = 1; i <= count; i += 1) {
+    if (!counts.has(i)) return { ok: false, reason: `index row ${i} is missing.` };
+  }
+  return { ok: true, reason: '' };
+}
+
+function normalizeSyncText(value) {
+  return String(value || '')
+    .normalize('NFKD')
+    .toLowerCase()
+    .replace(/&/g, ' and ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function syncTokenSet(value) {
+  return new Set(normalizeSyncText(value).split(' ').filter((token) => token.length > 1));
+}
+
+function syncBigramDice(a, b) {
+  const x = normalizeSyncText(a).replace(/\s+/g, ' ');
+  const y = normalizeSyncText(b).replace(/\s+/g, ' ');
+  if (!x && !y) return 1;
+  if (!x || !y) return 0;
+  if (x === y) return 1;
+  const grams = (text) => {
+    const list = [];
+    for (let i = 0; i < text.length - 1; i += 1) list.push(text.slice(i, i + 2));
+    return list;
+  };
+  const aGrams = grams(x);
+  const bGrams = grams(y);
+  const counts = new Map();
+  aGrams.forEach((gram) => counts.set(gram, (counts.get(gram) || 0) + 1));
+  let overlap = 0;
+  bGrams.forEach((gram) => {
+    const count = counts.get(gram) || 0;
+    if (count > 0) {
+      overlap += 1;
+      counts.set(gram, count - 1);
+    }
+  });
+  return (2 * overlap) / Math.max(1, aGrams.length + bGrams.length);
+}
+
+function syncSimilarity(a, b, dateA = '', dateB = '') {
+  const na = normalizeSyncText(a);
+  const nb = normalizeSyncText(b);
+  if (!na || !nb) return 0;
+  if (na === nb) return 1;
+  const setA = syncTokenSet(a);
+  const setB = syncTokenSet(b);
+  const intersection = [...setA].filter((token) => setB.has(token)).length;
+  const union = new Set([...setA, ...setB]).size;
+  const jaccard = union ? intersection / union : 0;
+  const dice = syncBigramDice(a, b);
+  let score = Math.max(dice * 0.72 + jaccard * 0.28, jaccard * 0.84 + dice * 0.16);
+  const da = normalizeSyncText(dateA);
+  const db = normalizeSyncText(dateB);
+  if (da && db && da === db) score = Math.min(1, score + 0.12);
+  return score;
+}
+
+function alignOldAndNewIndexRows(oldRows, newRows) {
+  const m = oldRows.length;
+  const n = newRows.length;
+  const gap = -0.62;
+  const dp = Array.from({ length: m + 1 }, () => Array(n + 1).fill(-Infinity));
+  const prev = Array.from({ length: m + 1 }, () => Array(n + 1).fill(null));
+  dp[0][0] = 0;
+  for (let i = 1; i <= m; i += 1) { dp[i][0] = dp[i - 1][0] + gap; prev[i][0] = 'old-gap'; }
+  for (let j = 1; j <= n; j += 1) { dp[0][j] = dp[0][j - 1] + gap; prev[0][j] = 'new-gap'; }
+
+  for (let i = 1; i <= m; i += 1) {
+    for (let j = 1; j <= n; j += 1) {
+      const sim = syncSimilarity(oldRows[i - 1].description, newRows[j - 1].description, oldRows[i - 1].date, newRows[j - 1].date);
+      const matchGain = sim >= 0.88 ? 2.8 + sim : sim >= 0.70 ? 1.75 + sim : sim >= 0.52 ? 0.75 + sim : sim >= 0.42 ? 0.05 + sim : -1.1;
+      const choices = [
+        { value: dp[i - 1][j - 1] + matchGain, action: 'match' },
+        { value: dp[i - 1][j] + gap, action: 'old-gap' },
+        { value: dp[i][j - 1] + gap, action: 'new-gap' },
+      ].sort((a, b) => b.value - a.value);
+      dp[i][j] = choices[0].value;
+      prev[i][j] = choices[0].action;
+    }
+  }
+
+  const matches = [];
+  let i = m;
+  let j = n;
+  while (i > 0 || j > 0) {
+    const action = prev[i][j];
+    if (action === 'match') {
+      const oldRow = oldRows[i - 1];
+      const newRow = newRows[j - 1];
+      const score = syncSimilarity(oldRow.description, newRow.description, oldRow.date, newRow.date);
+      if (score >= 0.48) matches.push({ oldRow, newRow, score });
+      i -= 1;
+      j -= 1;
+    } else if (action === 'old-gap') {
+      i -= 1;
+    } else {
+      j -= 1;
+    }
+  }
+  return matches.reverse();
+}
+
+function syncConfidence(score, manual = false) {
+  if (manual) return { label: 'Manual', className: 'manual' };
+  if (score >= 0.90) return { label: 'Strong', className: 'strong' };
+  if (score >= 0.72) return { label: 'Good', className: 'good' };
+  if (score >= 0.52) return { label: 'Review', className: 'review' };
+  return { label: 'Uncertain', className: 'uncertain' };
+}
+
+function recomputeSyncProposal({ preserveManual = true } = {}) {
+  const oldRows = syncState.oldIndexRows || [];
+  const newRows = syncState.newIndexInfo?.rows || [];
+  const oldValidation = validateSequentialIndexRows(oldRows, syncState.sourceSections.length);
+  const newValidation = validateSequentialIndexRows(newRows);
+  if (!oldValidation.ok || !newValidation.ok) {
+    if (!preserveManual) syncState.assignments = new Map();
+    return;
+  }
+
+  const manual = new Map();
+  if (preserveManual) {
+    syncState.assignments.forEach((value, key) => {
+      if (value.manual) manual.set(key, value);
+    });
+  }
+
+  const assignments = new Map(manual);
+  const usedSources = new Set([...manual.values()].map((value) => value.sourceKey));
+  const aligned = alignOldAndNewIndexRows(oldRows, newRows);
+  aligned.forEach(({ oldRow, newRow, score }) => {
+    if (assignments.has(newRow.number)) return;
+    const sourceKey = `old:${oldRow.number}`;
+    if (usedSources.has(sourceKey)) return;
+    assignments.set(newRow.number, { sourceKey, sourceType: 'old', sourceId: oldRow.number, score, manual: false, reason: 'index sequence match' });
+    usedSources.add(sourceKey);
+  });
+
+  const unmatchedRows = newRows.filter((row) => !assignments.has(row.number));
+  const availableFiles = syncState.newFiles.filter((fileEntry) => !usedSources.has(`new:${fileEntry.id}`));
+  const pairs = [];
+  unmatchedRows.forEach((row) => {
+    availableFiles.forEach((fileEntry) => {
+      const score = syncSimilarity(fileEntry.description, row.description);
+      pairs.push({ row, fileEntry, score });
+    });
+  });
+  pairs.sort((a, b) => b.score - a.score);
+  pairs.forEach(({ row, fileEntry, score }) => {
+    if (assignments.has(row.number) || usedSources.has(`new:${fileEntry.id}`)) return;
+    const forceSingle = unmatchedRows.length === 1 && availableFiles.length === 1;
+    if (score < 0.40 && !forceSingle) return;
+    const sourceKey = `new:${fileEntry.id}`;
+    assignments.set(row.number, { sourceKey, sourceType: 'new', sourceId: fileEntry.id, score, manual: false, reason: 'new filename match' });
+    usedSources.add(sourceKey);
+  });
+
+  syncState.assignments = assignments;
+  syncState.approveOmissions = false;
+  els.syncApproveOmissions.checked = false;
+}
+
+function syncOldRowForPosition(position) {
+  return syncState.oldIndexRows.find((row) => row.number === position) || null;
+}
+
+function syncSourceOptions() {
+  const old = syncState.sourceSections.map((section) => {
+    const row = syncOldRowForPosition(section.originalPosition);
+    return {
+      key: `old:${section.originalPosition}`,
+      label: `Existing ${section.originalPosition} — ${row?.description || section.tabLabel}`,
+      type: 'old',
+      id: section.originalPosition,
+    };
+  });
+  const fresh = syncState.newFiles.map((entry) => ({
+    key: `new:${entry.id}`,
+    label: `New PDF — ${entry.file.name}`,
+    type: 'new',
+    id: entry.id,
+  }));
+  return { old, fresh };
+}
+
+function getSyncUsedSourceKeys() {
+  return new Set([...syncState.assignments.values()].map((value) => value.sourceKey).filter(Boolean));
+}
+
+function getSyncOmittedOldPositions() {
+  const used = getSyncUsedSourceKeys();
+  return syncState.sourceSections.map((section) => section.originalPosition).filter((position) => !used.has(`old:${position}`));
+}
+
+function getSyncUnusedNewFiles() {
+  const used = getSyncUsedSourceKeys();
+  return syncState.newFiles.filter((entry) => !used.has(`new:${entry.id}`));
+}
+
+function getSyncExtraTabForPosition(position) {
+  const matches = syncState.extraTabs.filter((tab) => tab.tabNumber === position);
+  if (matches.length === 1) return { tab: matches[0], duplicate: false };
+  if (matches.length > 1) return { tab: matches[0], duplicate: true };
+  return { tab: null, duplicate: false };
+}
+
+function getSyncTabAsset(position) {
+  const sourceTab = syncState.sourceTabs[position - 1];
+  if (sourceTab) return { kind: 'source', sourceTab };
+  const extra = getSyncExtraTabForPosition(position);
+  if (extra.tab) return { kind: 'extra', extraTab: extra.tab, duplicate: extra.duplicate };
+  return { kind: 'missing' };
+}
+
+function validateSyncPlan() {
+  const errors = [];
+  const warnings = [];
+  if (!syncState.file) errors.push('Open the existing binder.');
+  if (syncState.analyzing) errors.push('Old binder analysis is still running.');
+  if (syncState.error) errors.push(syncState.error);
+  if (!syncState.newIndexFile) errors.push('Add the new index PDF.');
+  if (syncState.indexLoading) errors.push('New index analysis is still running.');
+  if (syncState.newIndexInfo?.error) errors.push(`Could not analyze the new index: ${syncState.newIndexInfo.error}`);
+
+  if (syncState.file && !syncState.analyzing && !syncState.error) {
+    const oldCheck = validateSequentialIndexRows(syncState.oldIndexRows, syncState.sourceSections.length);
+    if (!oldCheck.ok) errors.push(`The old binder index cannot be aligned automatically: ${oldCheck.reason}`);
+  }
+  const newRows = syncState.newIndexInfo?.rows || [];
+  if (syncState.newIndexFile && !syncState.indexLoading && !syncState.newIndexInfo?.error) {
+    const newCheck = validateSequentialIndexRows(newRows);
+    if (!newCheck.ok) errors.push(`The new index cannot define final order automatically: ${newCheck.reason}`);
+  }
+
+  if (!errors.length) {
+    const seen = new Map();
+    newRows.forEach((row) => {
+      const assignment = syncState.assignments.get(row.number);
+      if (!assignment?.sourceKey) {
+        errors.push(`Final position ${row.number} (${row.description}) is not assigned to a source document.`);
+        return;
+      }
+      seen.set(assignment.sourceKey, (seen.get(assignment.sourceKey) || 0) + 1);
+      const sourceExists = assignment.sourceType === 'old'
+        ? syncState.sourceSections.some((section) => section.originalPosition === Number(assignment.sourceId))
+        : syncState.newFiles.some((entry) => entry.id === assignment.sourceId);
+      if (!sourceExists) errors.push(`Final position ${row.number} points to a source that is no longer loaded.`);
+    });
+    [...seen.entries()].filter(([, count]) => count > 1).forEach(([sourceKey]) => errors.push(`Source ${sourceKey} is assigned to more than one final position.`));
+
+    for (let position = 1; position <= newRows.length; position += 1) {
+      const tab = getSyncTabAsset(position);
+      if (tab.kind === 'missing') errors.push(`TAB ${position} is required but no source or extra tab PDF is available.`);
+      if (tab.duplicate) errors.push(`More than one extra tab PDF maps to TAB ${position}.`);
+    }
+
+    const unusedNew = getSyncUnusedNewFiles();
+    if (unusedNew.length) errors.push(`${unusedNew.length} supplied new PDF${unusedNew.length === 1 ? ' is' : 's are'} not assigned to the new index.`);
+    const omitted = getSyncOmittedOldPositions();
+    if (omitted.length && !syncState.approveOmissions) errors.push(`${omitted.length} existing binder document${omitted.length === 1 ? '' : 's'} would be omitted. Review and approve the omission below.`);
+    if (omitted.length) warnings.push(`Existing position${omitted.length === 1 ? '' : 's'} ${omitted.join(', ')} will not appear in the synced binder.`);
+
+    const reviewAssignments = [...syncState.assignments.values()].filter((assignment) => !assignment.manual && assignment.score < 0.72);
+    if (reviewAssignments.length) warnings.push(`${reviewAssignments.length} proposed match${reviewAssignments.length === 1 ? '' : 'es'} should be reviewed before building.`);
+  }
+
+  return { ok: errors.length === 0, errors, warnings };
+}
+
+function renderSyncWorkspace() {
+  els.clearSyncFiles.disabled = syncState.newFiles.length === 0;
+  els.clearSyncTabs.disabled = syncState.extraTabs.length === 0;
+  els.syncRematch.disabled = syncState.analyzing || syncState.indexLoading || !syncState.file || !syncState.newIndexFile;
+  const validation = validateSyncPlan();
+  els.syncDownload.disabled = !validation.ok;
+
+  if (!syncState.file) {
+    els.syncAnalysisSummary.textContent = 'No binder loaded.';
+    els.syncAnalysisSummary.className = 'index-detection-summary';
+  } else if (syncState.analyzing) {
+    els.syncAnalysisSummary.textContent = `Analyzing ${syncState.file.name}…`;
+    els.syncAnalysisSummary.className = 'index-detection-summary';
+  } else if (syncState.error) {
+    els.syncAnalysisSummary.textContent = `Could not analyze ${syncState.file.name}.`;
+    els.syncAnalysisSummary.className = 'index-detection-summary error';
+  } else {
+    els.syncAnalysisSummary.textContent = `${syncState.file.name} — ${syncState.sourceTabs.length} existing position${syncState.sourceTabs.length === 1 ? '' : 's'}, ${syncState.oldIndexRows.length} old index row${syncState.oldIndexRows.length === 1 ? '' : 's'}.`;
+    els.syncAnalysisSummary.className = 'index-detection-summary success';
+  }
+
+  const newRows = syncState.newIndexInfo?.rows || [];
+  const oldNote = syncState.oldIndexRows.length ? `${syncState.oldIndexRows.length} old index entries` : 'no usable old index entries';
+  const newNote = syncState.indexLoading ? 'new index analysis running' : syncState.newIndexFile ? `${newRows.length} new index entries` : 'no new index loaded';
+  const fileNote = `${syncState.newFiles.length} new PDF${syncState.newFiles.length === 1 ? '' : 's'} supplied`;
+  const tabNote = syncState.extraTabs.length ? `; ${syncState.extraTabs.length} extra tab PDF${syncState.extraTabs.length === 1 ? '' : 's'} loaded` : '';
+  els.syncStructureNote.textContent = `${oldNote}; ${newNote}; ${fileNote}${tabNote}. The new index row order defines the final binder order.`;
+
+  renderSyncTable();
+  renderSyncOmissions();
+
+  if (validation.errors.length) setSyncStatus(validation.errors[0], 'error');
+  else if (validation.warnings.length) setSyncStatus(`Ready to build. ${validation.warnings[0]}`);
+  else if (syncState.file && syncState.newIndexFile) setSyncStatus(`Ready to build ${newRows.length} final position${newRows.length === 1 ? '' : 's'} from the proposed mapping.`, 'success');
+  else setSyncStatus('Open an existing binder and a new index to begin.');
+}
+
+function renderSyncTable() {
+  const rows = syncState.newIndexInfo?.rows || [];
+  if (syncState.indexLoading) {
+    els.syncBody.innerHTML = '<tr><td colspan="5" class="empty-cell">Analyzing the new index…</td></tr>';
+    return;
+  }
+  if (!rows.length) {
+    els.syncBody.innerHTML = '<tr><td colspan="5" class="empty-cell">Load an existing binder and a new index to generate a proposal.</td></tr>';
+    return;
+  }
+  const options = syncSourceOptions();
+  els.syncBody.innerHTML = '';
+  rows.forEach((row) => {
+    const assignment = syncState.assignments.get(row.number) || null;
+    const tr = document.createElement('tr');
+    const confidence = assignment ? syncConfidence(assignment.score || 0, assignment.manual) : { label: 'Unassigned', className: 'uncertain' };
+    const select = document.createElement('select');
+    select.className = 'sync-source-select';
+    select.innerHTML = '<option value="">— Choose source —</option>';
+    const oldGroup = document.createElement('optgroup');
+    oldGroup.label = 'Existing binder';
+    options.old.forEach((option) => {
+      const el = document.createElement('option');
+      el.value = option.key;
+      el.textContent = option.label;
+      if (assignment?.sourceKey === option.key) el.selected = true;
+      oldGroup.append(el);
+    });
+    select.append(oldGroup);
+    if (options.fresh.length) {
+      const newGroup = document.createElement('optgroup');
+      newGroup.label = 'New PDFs';
+      options.fresh.forEach((option) => {
+        const el = document.createElement('option');
+        el.value = option.key;
+        el.textContent = option.label;
+        if (assignment?.sourceKey === option.key) el.selected = true;
+        newGroup.append(el);
+      });
+      select.append(newGroup);
+    }
+    select.addEventListener('change', (event) => {
+      const value = event.target.value;
+      if (!value) syncState.assignments.delete(row.number);
+      else if (value.startsWith('old:')) {
+        const id = Number(value.slice(4));
+        syncState.assignments.set(row.number, { sourceKey: value, sourceType: 'old', sourceId: id, score: 1, manual: true, reason: 'manual' });
+      } else if (value.startsWith('new:')) {
+        const id = value.slice(4);
+        syncState.assignments.set(row.number, { sourceKey: value, sourceType: 'new', sourceId: id, score: 1, manual: true, reason: 'manual' });
+      }
+      syncState.approveOmissions = false;
+      els.syncApproveOmissions.checked = false;
+      renderSyncWorkspace();
+    });
+
+    const sourceCell = document.createElement('td');
+    sourceCell.append(select);
+    tr.innerHTML = `
+      <td><strong>${row.number}</strong></td>
+      <td><strong>${escapeHtml(row.description)}</strong></td>
+      <td>${escapeHtml(row.date || '')}</td>
+    `;
+    tr.append(sourceCell);
+    const confidenceCell = document.createElement('td');
+    confidenceCell.innerHTML = `<span class="sync-confidence ${confidence.className}">${escapeHtml(confidence.label)}</span>${assignment && !assignment.manual ? `<span class="sync-score">${Math.round((assignment.score || 0) * 100)}%</span>` : ''}`;
+    tr.append(confidenceCell);
+    els.syncBody.append(tr);
+  });
+}
+
+function renderSyncOmissions() {
+  const omitted = getSyncOmittedOldPositions();
+  els.syncOmissions.classList.toggle('is-hidden', omitted.length === 0);
+  if (!omitted.length) {
+    els.syncOmissionsList.textContent = '';
+    return;
+  }
+  const labels = omitted.map((position) => {
+    const row = syncOldRowForPosition(position);
+    return `${position}: ${row?.description || `Existing TAB ${position} content`}`;
+  });
+  els.syncOmissionsList.textContent = `Would be omitted: ${labels.join(' · ')}`;
+}
+
+function getSyncOldIndexPageIndexes() {
+  return [...new Set((syncState.oldIndexRows || []).map((row) => row.pageIndex))].sort((a, b) => a - b);
+}
+
+async function buildSyncedBinder() {
+  const validation = validateSyncPlan();
+  if (!validation.ok) {
+    renderSyncWorkspace();
+    return;
+  }
+
+  els.syncDownload.disabled = true;
+  try {
+    const output = await createOutputPdfDocument();
+    const source = await PDFDocument.load(syncState.bytes.slice(), { updateMetadata: false });
+    const newRows = syncState.newIndexInfo.rows;
+    const oldIndexPages = new Set(getSyncOldIndexPageIndexes());
+    let indexStart = null;
+    let indexInserted = false;
+
+    const appendNewIndex = async () => {
+      if (indexInserted) return;
+      indexStart = output.getPageCount();
+      setSyncStatus(`Adding new index ${syncState.newIndexFile.name}…`);
+      await appendIndexPdfToOutput(output, syncState.newIndexFile);
+      indexInserted = true;
+    };
+
+    for (const sourcePageIndex of syncState.frontMatterPageIndexes) {
+      if (oldIndexPages.has(sourcePageIndex)) {
+        await appendNewIndex();
+        continue;
+      }
+      await appendSourcePageIndexes(output, source, [sourcePageIndex]);
+    }
+    if (!indexInserted) await appendNewIndex();
+
+    const bookmarks = [];
+    if (els.syncCreateBookmarks.checked && indexStart != null) bookmarks.push({ title: 'INDEX', pageIndex: indexStart });
+    const contentTargets = [];
+
+    for (const row of newRows) {
+      const position = row.number;
+      const tabAsset = getSyncTabAsset(position);
+      const tabPageIndex = output.getPageCount();
+      if (tabAsset.kind === 'source') {
+        setSyncStatus(`Adding positional TAB ${position} from the existing binder…`);
+        await appendSourcePageIndexes(output, source, [tabAsset.sourceTab.pageIndex]);
+      } else if (tabAsset.kind === 'extra') {
+        setSyncStatus(`Adding extra positional TAB ${position}: ${tabAsset.extraTab.file.name}`);
+        await appendPdfToOutput(output, tabAsset.extraTab.file);
+      } else {
+        throw new Error(`TAB ${position} is missing.`);
+      }
+
+      if (els.syncCreateBookmarks.checked) {
+        const title = tabAsset.kind === 'extra'
+          ? (tabAsset.extraTab.bookmarkTitle || `TAB ${position}`)
+          : (tabAsset.sourceTab.label || `TAB ${position}`);
+        bookmarks.push({ title, pageIndex: tabPageIndex });
+      }
+
+      contentTargets[position - 1] = output.getPageCount();
+      const assignment = syncState.assignments.get(position);
+      if (assignment.sourceType === 'old') {
+        const section = syncState.sourceSections.find((candidate) => candidate.originalPosition === Number(assignment.sourceId));
+        if (!section) throw new Error(`Existing source for final position ${position} is missing.`);
+        setSyncStatus(`Adding existing content to final position ${position}…`);
+        await appendSourcePageIndexes(output, source, section.pageIndexes);
+      } else {
+        const fileEntry = syncState.newFiles.find((candidate) => candidate.id === assignment.sourceId);
+        if (!fileEntry) throw new Error(`New PDF for final position ${position} is missing.`);
+        setSyncStatus(`Adding ${fileEntry.file.name} at final position ${position}…`);
+        await appendPdfToOutput(output, fileEntry.file);
+      }
+    }
+
+    setSyncStatus(`Creating ${newRows.length} index link${newRows.length === 1 ? '' : 's'}…`);
+    newRows.forEach((row) => {
+      const sourcePageIndex = indexStart + row.pageIndex;
+      const targetPageIndex = contentTargets[row.number - 1];
+      addInternalLinkAnnotation(output, output.getPage(sourcePageIndex), row.rect, targetPageIndex);
+    });
+
+    if (bookmarks.length) {
+      setSyncStatus(`Creating ${bookmarks.length} top-level bookmark${bookmarks.length === 1 ? '' : 's'}…`);
+      addTopLevelBookmarks(output, bookmarks);
+    }
+
+    setSyncStatus('Saving synced binder…');
+    const bytes = await output.save();
+    const filename = sanitizePdfFilename(els.syncOutputName.value || 'Synced Binder.pdf');
+    downloadBlob(new Blob([bytes], { type: 'application/pdf' }), filename);
+    const existingUsed = [...syncState.assignments.values()].filter((assignment) => assignment.sourceType === 'old').length;
+    const newUsed = [...syncState.assignments.values()].filter((assignment) => assignment.sourceType === 'new').length;
+    const omitted = getSyncOmittedOldPositions().length;
+    setSyncStatus(`Built ${filename}: ${newRows.length} final positions, ${existingUsed} existing documents reused, ${newUsed} new PDFs inserted${omitted ? `, ${omitted} old document${omitted === 1 ? '' : 's'} omitted` : ''}.`, 'success');
+  } catch (error) {
+    console.error(error);
+    setSyncStatus(`Could not build the synced binder: ${friendlyError(error)}`, 'error');
+  } finally {
+    els.syncDownload.disabled = !validateSyncPlan().ok;
+  }
+}
+
+
+// ---------------------------------------------------------------------------
 // Reorder Binder workflow (v0.11.0)
 // ---------------------------------------------------------------------------
 
@@ -4609,6 +5371,11 @@ async function buildReorderedBinder() {
     const currentValidation = validateReorderPlan();
     els.reorderDownload.disabled = !currentValidation.ok;
   }
+}
+
+function setSyncStatus(message, type = '') {
+  els.syncStatus.textContent = message;
+  els.syncStatus.className = `status ${type}`.trim();
 }
 
 function setReorderStatus(message, type = '') {
