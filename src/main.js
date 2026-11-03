@@ -73,6 +73,7 @@ const els = {
   createIndexLinks: document.querySelector('#create-index-links'),
   indexDetectionSummary: document.querySelector('#index-detection-summary'),
   indexLinkBody: document.querySelector('#index-link-body'),
+  manualBuildIndex: document.querySelector('#manual-build-index'),
   insertBuildTabs: document.querySelector('#insert-build-tabs'),
   createBuildBookmarks: document.querySelector('#create-build-bookmarks'),
   buildManifest: document.querySelector('#build-manifest'),
@@ -90,6 +91,7 @@ const els = {
   clearInsertIndex: document.querySelector('#clear-insert-index'),
   insertIndexSummary: document.querySelector('#insert-index-summary'),
   insertIndexBody: document.querySelector('#insert-index-body'),
+  manualInsertIndex: document.querySelector('#manual-insert-index'),
   insertCreateBookmarks: document.querySelector('#insert-create-bookmarks'),
   insertRefreshIndexLinks: document.querySelector('#insert-refresh-index-links'),
   insertOutputName: document.querySelector('#insert-output-name'),
@@ -113,7 +115,23 @@ const els = {
   reorderStructureNote: document.querySelector('#reorder-structure-note'),
   reorderIndexSummary: document.querySelector('#reorder-index-summary'),
   reorderIndexBody: document.querySelector('#reorder-index-body'),
+  manualReorderIndex: document.querySelector('#manual-reorder-index'),
   reorderBody: document.querySelector('#reorder-body'),
+
+  manualIndexDialog: document.querySelector('#manual-index-dialog'),
+  closeManualIndex: document.querySelector('#close-manual-index'),
+  cancelManualIndex: document.querySelector('#cancel-manual-index'),
+  applyManualIndex: document.querySelector('#apply-manual-index'),
+  manualIndexPrev: document.querySelector('#manual-index-prev'),
+  manualIndexNext: document.querySelector('#manual-index-next'),
+  manualIndexPageLabel: document.querySelector('#manual-index-page-label'),
+  manualIndexDraw: document.querySelector('#manual-index-draw'),
+  manualIndexReset: document.querySelector('#manual-index-reset'),
+  manualIndexStatus: document.querySelector('#manual-index-status'),
+  manualIndexCanvas: document.querySelector('#manual-index-canvas'),
+  manualIndexOverlay: document.querySelector('#manual-index-overlay'),
+  manualIndexMapBody: document.querySelector('#manual-index-map-body'),
+  manualIndexSummary: document.querySelector('#manual-index-summary'),
 };
 
 const splitState = {
@@ -138,6 +156,7 @@ const buildState = {
   indexFile: null,
   indexInfo: null,
   indexLoading: false,
+  manualIndexMappings: null,
 };
 
 const insertState = {
@@ -151,6 +170,7 @@ const insertState = {
   replacementIndexFile: null,
   replacementIndexInfo: null,
   replacementIndexLoading: false,
+  manualIndexMappings: null,
   operations: [],
   extraTabs: [],
   analyzing: false,
@@ -169,9 +189,27 @@ const reorderState = {
   replacementIndexFile: null,
   replacementIndexInfo: null,
   replacementIndexLoading: false,
+  manualIndexMappings: null,
   analyzing: false,
   error: null,
   draggedItemId: null,
+};
+
+const manualIndexState = {
+  mode: null,
+  sourceKey: '',
+  loadingTask: null,
+  pdf: null,
+  pageIndexes: [],
+  pageCursor: 0,
+  mappings: [],
+  automaticMappings: [],
+  viewport: null,
+  textItems: [],
+  drawMode: false,
+  dragStart: null,
+  drawElement: null,
+  selectedId: null,
 };
 
 els.modeTabs.forEach((tab) => {
@@ -233,6 +271,22 @@ els.bulkPasteDialog.addEventListener('cancel', (event) => {
   closeBulkPasteDialog();
 });
 
+els.manualBuildIndex.addEventListener('click', () => openManualIndexDialog('build'));
+els.manualInsertIndex.addEventListener('click', () => openManualIndexDialog('insert'));
+els.manualReorderIndex.addEventListener('click', () => openManualIndexDialog('reorder'));
+els.closeManualIndex.addEventListener('click', closeManualIndexDialog);
+els.cancelManualIndex.addEventListener('click', closeManualIndexDialog);
+els.applyManualIndex.addEventListener('click', applyManualIndexMappings);
+els.manualIndexPrev.addEventListener('click', () => changeManualIndexPage(-1));
+els.manualIndexNext.addEventListener('click', () => changeManualIndexPage(1));
+els.manualIndexDraw.addEventListener('click', toggleManualIndexDrawMode);
+els.manualIndexReset.addEventListener('click', resetManualIndexMappingsToAutomatic);
+els.manualIndexDialog.addEventListener('cancel', (event) => { event.preventDefault(); closeManualIndexDialog(); });
+els.manualIndexOverlay.addEventListener('pointerdown', handleManualIndexPointerDown);
+els.manualIndexOverlay.addEventListener('pointermove', handleManualIndexPointerMove);
+els.manualIndexOverlay.addEventListener('pointerup', handleManualIndexPointerUp);
+els.manualIndexOverlay.addEventListener('pointercancel', cancelManualIndexDraw);
+
 els.buildFiles.addEventListener('change', (event) => {
   addBuildFiles([...event.target.files]);
   event.target.value = '';
@@ -255,6 +309,7 @@ els.clearBuildIndex.addEventListener('click', () => {
   buildState.indexFile = null;
   buildState.indexInfo = null;
   buildState.indexLoading = false;
+  buildState.manualIndexMappings = null;
   renderIndexPanel();
   renderBuildTable();
   updateBuildStatusSummary();
@@ -299,6 +354,7 @@ els.clearInsertIndex.addEventListener('click', () => {
   insertState.replacementIndexFile = null;
   insertState.replacementIndexInfo = null;
   insertState.replacementIndexLoading = false;
+  insertState.manualIndexMappings = null;
   renderInsertWorkspace();
 });
 els.insertCreateBookmarks.addEventListener('change', renderInsertWorkspace);
@@ -319,6 +375,7 @@ els.clearReorderIndex.addEventListener('click', () => {
   reorderState.replacementIndexFile = null;
   reorderState.replacementIndexInfo = null;
   reorderState.replacementIndexLoading = false;
+  reorderState.manualIndexMappings = null;
   renderReorderWorkspace();
 });
 els.resetReorderOrder.addEventListener('click', resetReorderOrder);
@@ -326,6 +383,549 @@ els.reorderCreateBookmarks.addEventListener('change', renderReorderWorkspace);
 els.reorderRefreshIndexLinks.addEventListener('change', renderReorderWorkspace);
 els.reorderDownload.addEventListener('click', buildReorderedBinder);
 
+
+
+function getManualIndexModeState(mode) {
+  if (mode === 'build') return buildState;
+  if (mode === 'insert') return insertState;
+  if (mode === 'reorder') return reorderState;
+  return null;
+}
+
+function manualIndexSourceKeyForFile(file, prefix = 'file') {
+  if (!file) return '';
+  return `${prefix}:${file.name}:${file.size}:${file.lastModified || 0}`;
+}
+
+function getManualIndexContext(mode) {
+  if (mode === 'build') {
+    if (!buildState.indexFile || buildState.indexLoading) return null;
+    const pageCount = buildState.indexInfo?.pageCount || 0;
+    return {
+      mode,
+      title: buildState.indexFile.name,
+      sourceKey: manualIndexSourceKeyForFile(buildState.indexFile, 'build-index'),
+      file: buildState.indexFile,
+      data: null,
+      pageIndexes: Array.from({ length: pageCount }, (_, index) => index),
+      automaticRows: buildState.indexInfo?.rows || [],
+      destinationLabels: buildState.entries.map((entry) => entry.description || entry.file.name),
+    };
+  }
+
+  if (mode === 'insert') {
+    const plan = getInsertPlan();
+    if (!insertState.file || insertState.analyzing) return null;
+    if (insertState.replacementIndexFile) {
+      if (insertState.replacementIndexLoading) return null;
+      const pageCount = insertState.replacementIndexInfo?.pageCount || 0;
+      return {
+        mode,
+        title: insertState.replacementIndexFile.name,
+        sourceKey: manualIndexSourceKeyForFile(insertState.replacementIndexFile, 'insert-replacement-index'),
+        file: insertState.replacementIndexFile,
+        data: null,
+        pageIndexes: Array.from({ length: pageCount }, (_, index) => index),
+        automaticRows: insertState.replacementIndexInfo?.rows || [],
+        destinationLabels: plan.items.map((item) => item.description || `Position ${plan.items.indexOf(item) + 1}`),
+      };
+    }
+    const pages = insertState.frontMatterPageIndexes || [];
+    if (!insertState.bytes || !pages.length) return null;
+    return {
+      mode,
+      title: `${insertState.file.name} — existing front matter`,
+      sourceKey: `insert-existing:${insertState.file.name}:${insertState.file.size}:${insertState.file.lastModified || 0}`,
+      file: null,
+      data: insertState.bytes.slice(),
+      pageIndexes: [...pages],
+      automaticRows: insertState.indexRows || [],
+      destinationLabels: plan.items.map((item) => item.description || `Position ${plan.items.indexOf(item) + 1}`),
+    };
+  }
+
+  if (mode === 'reorder') {
+    if (!reorderState.file || reorderState.analyzing) return null;
+    if (reorderState.replacementIndexFile) {
+      if (reorderState.replacementIndexLoading) return null;
+      const pageCount = reorderState.replacementIndexInfo?.pageCount || 0;
+      return {
+        mode,
+        title: reorderState.replacementIndexFile.name,
+        sourceKey: manualIndexSourceKeyForFile(reorderState.replacementIndexFile, 'reorder-replacement-index'),
+        file: reorderState.replacementIndexFile,
+        data: null,
+        pageIndexes: Array.from({ length: pageCount }, (_, index) => index),
+        automaticRows: reorderState.replacementIndexInfo?.rows || [],
+        destinationLabels: reorderState.items.map((item) => item.description || `Position ${reorderState.items.indexOf(item) + 1}`),
+      };
+    }
+    const pages = reorderState.frontMatterPageIndexes || [];
+    if (!reorderState.bytes || !pages.length) return null;
+    return {
+      mode,
+      title: `${reorderState.file.name} — existing front matter`,
+      sourceKey: `reorder-existing:${reorderState.file.name}:${reorderState.file.size}:${reorderState.file.lastModified || 0}`,
+      file: null,
+      data: reorderState.bytes.slice(),
+      pageIndexes: [...pages],
+      automaticRows: reorderState.indexRows || [],
+      destinationLabels: reorderState.items.map((item) => item.description || `Position ${reorderState.items.indexOf(item) + 1}`),
+    };
+  }
+  return null;
+}
+
+function mappingFromAutomaticIndexRow(row, destinationCount) {
+  const destination = Number.isInteger(row.number) && row.number >= 1 && row.number <= destinationCount
+    ? row.number
+    : null;
+  return {
+    id: makeId(),
+    pageIndex: row.pageIndex,
+    rect: [...row.rect],
+    description: row.description || `Detected row ${row.number || ''}`.trim(),
+    date: row.date || '',
+    type: destination ? 'link' : 'ignore',
+    destinationPosition: destination,
+    source: row.rectSource === 'existing-link' ? 'existing-link' : 'automatic',
+    originalNumber: row.number || null,
+  };
+}
+
+function cloneManualMappings(mappings) {
+  return (mappings || []).map((mapping) => ({
+    ...mapping,
+    rect: Array.isArray(mapping.rect) ? [...mapping.rect] : null,
+  }));
+}
+
+async function openManualIndexDialog(mode) {
+  const context = getManualIndexContext(mode);
+  if (!context || !context.pageIndexes.length) {
+    const message = 'Load an index/front matter source before opening manual mapping.';
+    if (mode === 'build') setBuildStatus(message, 'error');
+    else if (mode === 'insert') setInsertStatus(message, 'error');
+    else setReorderStatus(message, 'error');
+    return;
+  }
+
+  await closeManualIndexPdf();
+  manualIndexState.mode = mode;
+  manualIndexState.sourceKey = context.sourceKey;
+  manualIndexState.pageIndexes = [...context.pageIndexes];
+  manualIndexState.pageCursor = 0;
+  manualIndexState.drawMode = false;
+  manualIndexState.dragStart = null;
+  manualIndexState.selectedId = null;
+  manualIndexState.viewport = null;
+  manualIndexState.textItems = [];
+
+  const automatic = context.automaticRows.map((row) => mappingFromAutomaticIndexRow(row, context.destinationLabels.length));
+  manualIndexState.automaticMappings = cloneManualMappings(automatic);
+  const stored = getManualIndexModeState(mode)?.manualIndexMappings;
+  const hasStoredMapping = stored?.sourceKey === context.sourceKey;
+  manualIndexState.mappings = hasStoredMapping
+    ? cloneManualMappings(stored.mappings)
+    : cloneManualMappings(automatic);
+
+  els.manualIndexStatus.textContent = `Loading ${context.title}…`;
+  els.manualIndexDraw.classList.remove('active');
+  els.manualIndexOverlay.classList.remove('draw-mode');
+  if (typeof els.manualIndexDialog.showModal === 'function') els.manualIndexDialog.showModal();
+  else els.manualIndexDialog.setAttribute('open', '');
+
+  try {
+    let data;
+    if (context.file) data = new Uint8Array(await context.file.arrayBuffer());
+    else data = context.data;
+    manualIndexState.loadingTask = pdfjsLib.getDocument({ data });
+    manualIndexState.pdf = await manualIndexState.loadingTask.promise;
+    if (!hasStoredMapping) await augmentManualMappingsWithRawLinks(context);
+    await renderManualIndexPage();
+    renderManualIndexMapTable();
+  } catch (error) {
+    console.error('Could not open manual index mapping source.', error);
+    els.manualIndexStatus.textContent = `Could not open index: ${friendlyError(error)}`;
+  }
+}
+
+async function closeManualIndexPdf() {
+  if (manualIndexState.loadingTask) {
+    try { await manualIndexState.loadingTask.destroy(); } catch (error) { console.warn('Could not release manual index PDF resources.', error); }
+  }
+  manualIndexState.loadingTask = null;
+  manualIndexState.pdf = null;
+}
+
+function closeManualIndexDialog() {
+  closeManualIndexPdf();
+  cancelManualIndexDraw();
+  if (typeof els.manualIndexDialog.close === 'function' && els.manualIndexDialog.open) els.manualIndexDialog.close();
+  else els.manualIndexDialog.removeAttribute('open');
+}
+
+async function changeManualIndexPage(delta) {
+  const next = manualIndexState.pageCursor + delta;
+  if (next < 0 || next >= manualIndexState.pageIndexes.length) return;
+  manualIndexState.pageCursor = next;
+  manualIndexState.selectedId = null;
+  cancelManualIndexDraw();
+  await renderManualIndexPage();
+  renderManualIndexMapTable();
+}
+
+
+function rectsSubstantiallyOverlap(a, b) {
+  const ra = normalizePdfRect(a);
+  const rb = normalizePdfRect(b);
+  if (!ra || !rb) return false;
+  const left = Math.max(ra[0], rb[0]);
+  const bottom = Math.max(ra[1], rb[1]);
+  const right = Math.min(ra[2], rb[2]);
+  const top = Math.min(ra[3], rb[3]);
+  if (right <= left || top <= bottom) return false;
+  const intersection = (right - left) * (top - bottom);
+  const areaA = Math.max(1, (ra[2] - ra[0]) * (ra[3] - ra[1]));
+  const areaB = Math.max(1, (rb[2] - rb[0]) * (rb[3] - rb[1]));
+  return intersection / Math.min(areaA, areaB) >= 0.45;
+}
+
+async function augmentManualMappingsWithRawLinks(context) {
+  if (!manualIndexState.pdf) return;
+  const pending = [];
+  for (const pageIndex of manualIndexState.pageIndexes) {
+    const page = await manualIndexState.pdf.getPage(pageIndex + 1);
+    let annotations = [];
+    try { annotations = await page.getAnnotations({ intent: 'any' }); } catch { annotations = []; }
+    const linkRects = annotations
+      .filter((annotation) => annotation?.subtype === 'Link' && Array.isArray(annotation.rect))
+      .map((annotation) => normalizePdfRect(annotation.rect))
+      .filter(Boolean);
+    if (!linkRects.length) continue;
+    const textContent = await page.getTextContent();
+    const textItems = textContent.items.map(normalizeIndexTextItem).filter(Boolean);
+    linkRects.forEach((rect) => {
+      const duplicate = manualIndexState.mappings.some((mapping) => mapping.pageIndex === pageIndex && rectsSubstantiallyOverlap(mapping.rect, rect));
+      if (duplicate) return;
+      const text = joinIndexTextItems(textItems.filter((item) => {
+        const cx = item.x + item.width / 2;
+        const cy = item.y;
+        return cx >= rect[0] && cx <= rect[2] && cy >= rect[1] && cy <= rect[3];
+      })) || 'Existing link region';
+      pending.push({ pageIndex, rect, description: text });
+    });
+  }
+  pending.sort((a, b) => a.pageIndex - b.pageIndex || b.rect[3] - a.rect[3] || a.rect[0] - b.rect[0]);
+  const used = new Set(manualIndexState.mappings.filter((mapping) => mapping.type === 'link').map((mapping) => mapping.destinationPosition).filter(Boolean));
+  pending.forEach((entry) => {
+    const firstUnused = context.destinationLabels.findIndex((_, index) => !used.has(index + 1));
+    const destinationPosition = firstUnused >= 0 ? firstUnused + 1 : null;
+    if (destinationPosition) used.add(destinationPosition);
+    manualIndexState.mappings.push({
+      id: makeId(),
+      pageIndex: entry.pageIndex,
+      rect: entry.rect,
+      description: entry.description,
+      date: '',
+      type: 'link',
+      destinationPosition,
+      source: 'existing-link-unmapped',
+      originalNumber: null,
+    });
+  });
+}
+
+async function renderManualIndexPage() {
+  if (!manualIndexState.pdf || !manualIndexState.pageIndexes.length) return;
+  const sourcePageIndex = manualIndexState.pageIndexes[manualIndexState.pageCursor];
+  const page = await manualIndexState.pdf.getPage(sourcePageIndex + 1);
+  const baseViewport = page.getViewport({ scale: 1 });
+  const scale = Math.min(1.55, Math.max(0.8, 900 / Math.max(1, baseViewport.width)));
+  const viewport = page.getViewport({ scale });
+  manualIndexState.viewport = viewport;
+
+  const canvas = els.manualIndexCanvas;
+  const context = canvas.getContext('2d', { alpha: false });
+  canvas.width = Math.ceil(viewport.width);
+  canvas.height = Math.ceil(viewport.height);
+  canvas.style.width = `${viewport.width}px`;
+  canvas.style.height = `${viewport.height}px`;
+  els.manualIndexPreview.style.width = `${viewport.width}px`;
+  els.manualIndexPreview.style.height = `${viewport.height}px`;
+  els.manualIndexOverlay.style.width = `${viewport.width}px`;
+  els.manualIndexOverlay.style.height = `${viewport.height}px`;
+
+  await page.render({ canvasContext: context, viewport }).promise;
+  const textContent = await page.getTextContent();
+  manualIndexState.textItems = textContent.items.map(normalizeIndexTextItem).filter(Boolean);
+
+  els.manualIndexPageLabel.textContent = `Page ${manualIndexState.pageCursor + 1} of ${manualIndexState.pageIndexes.length} (source PDF page ${sourcePageIndex + 1})`;
+  els.manualIndexPrev.disabled = manualIndexState.pageCursor === 0;
+  els.manualIndexNext.disabled = manualIndexState.pageCursor === manualIndexState.pageIndexes.length - 1;
+  els.manualIndexStatus.textContent = `${manualIndexState.mappings.filter((mapping) => mapping.pageIndex === sourcePageIndex).length} mapped region${manualIndexState.mappings.filter((mapping) => mapping.pageIndex === sourcePageIndex).length === 1 ? '' : 's'} on this page.`;
+  renderManualIndexOverlay();
+}
+
+function manualRectToCss(rect) {
+  const viewport = manualIndexState.viewport;
+  if (!viewport || !rect) return null;
+  const converted = viewport.convertToViewportRectangle(rect);
+  const widthRatio = els.manualIndexOverlay.clientWidth / viewport.width || 1;
+  const heightRatio = els.manualIndexOverlay.clientHeight / viewport.height || 1;
+  const left = Math.min(converted[0], converted[2]) * widthRatio;
+  const top = Math.min(converted[1], converted[3]) * heightRatio;
+  const right = Math.max(converted[0], converted[2]) * widthRatio;
+  const bottom = Math.max(converted[1], converted[3]) * heightRatio;
+  return { left, top, width: Math.max(2, right - left), height: Math.max(2, bottom - top) };
+}
+
+function renderManualIndexOverlay() {
+  els.manualIndexOverlay.innerHTML = '';
+  const pageIndex = manualIndexState.pageIndexes[manualIndexState.pageCursor];
+  manualIndexState.mappings.filter((mapping) => mapping.pageIndex === pageIndex).forEach((mapping) => {
+    const box = manualRectToCss(mapping.rect);
+    if (!box) return;
+    const div = document.createElement('div');
+    div.className = `manual-link-region ${mapping.type}${mapping.id === manualIndexState.selectedId ? ' selected' : ''}`;
+    div.style.left = `${box.left}px`;
+    div.style.top = `${box.top}px`;
+    div.style.width = `${box.width}px`;
+    div.style.height = `${box.height}px`;
+    div.title = mapping.type === 'link'
+      ? `${mapping.description || 'Link region'} → Position ${mapping.destinationPosition || '?'}`
+      : `${mapping.type}: ${mapping.description || 'region'}`;
+    div.addEventListener('click', (event) => {
+      if (manualIndexState.drawMode) return;
+      event.stopPropagation();
+      manualIndexState.selectedId = mapping.id;
+      renderManualIndexOverlay();
+      renderManualIndexMapTable();
+    });
+    els.manualIndexOverlay.append(div);
+  });
+}
+
+function renderManualIndexMapTable() {
+  const context = getManualIndexContext(manualIndexState.mode);
+  if (!context) return;
+  const mappings = manualIndexState.mappings;
+  if (!mappings.length) {
+    els.manualIndexMapBody.innerHTML = '<tr><td colspan="5" class="empty-cell">No regions detected. Use Draw link region to create one.</td></tr>';
+  } else {
+    els.manualIndexMapBody.innerHTML = '';
+    mappings.forEach((mapping) => {
+      const tr = document.createElement('tr');
+      if (mapping.id === manualIndexState.selectedId) tr.classList.add('selected');
+      const typeOptions = ['link', 'heading', 'ignore'].map((type) => `<option value="${type}"${mapping.type === type ? ' selected' : ''}>${type === 'link' ? 'Link' : type === 'heading' ? 'Heading' : 'Ignore'}</option>`).join('');
+      const destinationOptions = ['<option value="">Choose…</option>', ...context.destinationLabels.map((label, index) => `<option value="${index + 1}"${mapping.destinationPosition === index + 1 ? ' selected' : ''}>${index + 1} — ${escapeHtml(String(label || `Position ${index + 1}`).slice(0, 70))}</option>`)].join('');
+      tr.innerHTML = `
+        <td>${mapping.pageIndex + 1}</td>
+        <td><span class="manual-map-description">${escapeHtml(mapping.description || '(drawn region)')}</span><span class="manual-map-source">${escapeHtml(mapping.source || 'manual')}</span></td>
+        <td><select data-role="type">${typeOptions}</select></td>
+        <td><select data-role="destination" ${mapping.type === 'link' ? '' : 'disabled'}>${destinationOptions}</select></td>
+        <td><button type="button" data-role="remove" title="Remove region">×</button></td>`;
+      tr.addEventListener('click', (event) => {
+        if (event.target.closest('select,button')) return;
+        manualIndexState.selectedId = mapping.id;
+        const pageCursor = manualIndexState.pageIndexes.indexOf(mapping.pageIndex);
+        if (pageCursor >= 0 && pageCursor !== manualIndexState.pageCursor) {
+          manualIndexState.pageCursor = pageCursor;
+          renderManualIndexPage();
+        } else renderManualIndexOverlay();
+        renderManualIndexMapTable();
+      });
+      tr.querySelector('[data-role="type"]').addEventListener('change', (event) => {
+        mapping.type = event.target.value;
+        if (mapping.type === 'link' && !mapping.destinationPosition) mapping.destinationPosition = 1;
+        renderManualIndexOverlay();
+        renderManualIndexMapTable();
+      });
+      tr.querySelector('[data-role="destination"]').addEventListener('change', (event) => {
+        const value = Number.parseInt(event.target.value, 10);
+        mapping.destinationPosition = Number.isInteger(value) ? value : null;
+        renderManualIndexOverlay();
+        updateManualIndexSummary();
+      });
+      tr.querySelector('[data-role="remove"]').addEventListener('click', () => {
+        manualIndexState.mappings = manualIndexState.mappings.filter((candidate) => candidate.id !== mapping.id);
+        if (manualIndexState.selectedId === mapping.id) manualIndexState.selectedId = null;
+        renderManualIndexOverlay();
+        renderManualIndexMapTable();
+      });
+      els.manualIndexMapBody.append(tr);
+    });
+  }
+  updateManualIndexSummary();
+}
+
+function updateManualIndexSummary() {
+  const context = getManualIndexContext(manualIndexState.mode);
+  if (!context) return;
+  const links = manualIndexState.mappings.filter((mapping) => mapping.type === 'link');
+  const invalid = links.filter((mapping) => !Number.isInteger(mapping.destinationPosition) || mapping.destinationPosition < 1 || mapping.destinationPosition > context.destinationLabels.length || !normalizePdfRect(mapping.rect));
+  const headings = manualIndexState.mappings.filter((mapping) => mapping.type === 'heading').length;
+  const ignored = manualIndexState.mappings.filter((mapping) => mapping.type === 'ignore').length;
+  els.manualIndexSummary.textContent = `${links.length} link${links.length === 1 ? '' : 's'}, ${headings} heading${headings === 1 ? '' : 's'}, ${ignored} ignored region${ignored === 1 ? '' : 's'}.${invalid.length ? ` ${invalid.length} link${invalid.length === 1 ? ' needs' : 's need'} a valid destination.` : ' Ready to apply.'}`;
+  els.applyManualIndex.disabled = invalid.length > 0 || links.length === 0;
+}
+
+function toggleManualIndexDrawMode() {
+  manualIndexState.drawMode = !manualIndexState.drawMode;
+  els.manualIndexDraw.classList.toggle('active', manualIndexState.drawMode);
+  els.manualIndexDraw.textContent = manualIndexState.drawMode ? 'Drawing… drag on page' : 'Draw link region';
+  els.manualIndexOverlay.classList.toggle('draw-mode', manualIndexState.drawMode);
+  els.manualIndexStatus.textContent = manualIndexState.drawMode ? 'Drag a rectangle over the index text you want clickable.' : 'Draw mode off.';
+  cancelManualIndexDraw(false);
+}
+
+function resetManualIndexMappingsToAutomatic() {
+  manualIndexState.mappings = cloneManualMappings(manualIndexState.automaticMappings);
+  manualIndexState.selectedId = null;
+  renderManualIndexOverlay();
+  renderManualIndexMapTable();
+  els.manualIndexStatus.textContent = manualIndexState.mappings.length ? 'Restored automatically detected regions.' : 'No automatic regions were detected; draw regions manually.';
+}
+
+function pointerPositionInManualOverlay(event) {
+  const rect = els.manualIndexOverlay.getBoundingClientRect();
+  return {
+    x: Math.max(0, Math.min(rect.width, event.clientX - rect.left)),
+    y: Math.max(0, Math.min(rect.height, event.clientY - rect.top)),
+  };
+}
+
+function handleManualIndexPointerDown(event) {
+  if (!manualIndexState.drawMode || !manualIndexState.viewport) return;
+  event.preventDefault();
+  const point = pointerPositionInManualOverlay(event);
+  manualIndexState.dragStart = point;
+  const div = document.createElement('div');
+  div.className = 'manual-draw-region';
+  div.style.left = `${point.x}px`;
+  div.style.top = `${point.y}px`;
+  div.style.width = '1px';
+  div.style.height = '1px';
+  manualIndexState.drawElement = div;
+  els.manualIndexOverlay.append(div);
+  try { els.manualIndexOverlay.setPointerCapture(event.pointerId); } catch {}
+}
+
+function handleManualIndexPointerMove(event) {
+  if (!manualIndexState.drawMode || !manualIndexState.dragStart || !manualIndexState.drawElement) return;
+  const point = pointerPositionInManualOverlay(event);
+  const left = Math.min(point.x, manualIndexState.dragStart.x);
+  const top = Math.min(point.y, manualIndexState.dragStart.y);
+  manualIndexState.drawElement.style.left = `${left}px`;
+  manualIndexState.drawElement.style.top = `${top}px`;
+  manualIndexState.drawElement.style.width = `${Math.abs(point.x - manualIndexState.dragStart.x)}px`;
+  manualIndexState.drawElement.style.height = `${Math.abs(point.y - manualIndexState.dragStart.y)}px`;
+}
+
+function handleManualIndexPointerUp(event) {
+  if (!manualIndexState.drawMode || !manualIndexState.dragStart || !manualIndexState.viewport) return;
+  const end = pointerPositionInManualOverlay(event);
+  const start = manualIndexState.dragStart;
+  const width = Math.abs(end.x - start.x);
+  const height = Math.abs(end.y - start.y);
+  cancelManualIndexDraw(false);
+  if (width < 8 || height < 8) {
+    els.manualIndexStatus.textContent = 'Draw a slightly larger rectangle.';
+    return;
+  }
+
+  const overlayRect = els.manualIndexOverlay.getBoundingClientRect();
+  const sx = manualIndexState.viewport.width / Math.max(1, overlayRect.width);
+  const sy = manualIndexState.viewport.height / Math.max(1, overlayRect.height);
+  const [pdfX1, pdfY1] = manualIndexState.viewport.convertToPdfPoint(start.x * sx, start.y * sy);
+  const [pdfX2, pdfY2] = manualIndexState.viewport.convertToPdfPoint(end.x * sx, end.y * sy);
+  const rect = normalizePdfRect([pdfX1, pdfY1, pdfX2, pdfY2]);
+  if (!rect) return;
+
+  const selectedText = manualIndexState.textItems.filter((item) => {
+    const cx = item.x + item.width / 2;
+    const cy = item.y;
+    return cx >= rect[0] && cx <= rect[2] && cy >= rect[1] && cy <= rect[3];
+  });
+  const description = joinIndexTextItems(selectedText) || 'Manual link region';
+  const used = new Set(manualIndexState.mappings.filter((mapping) => mapping.type === 'link').map((mapping) => mapping.destinationPosition));
+  const context = getManualIndexContext(manualIndexState.mode);
+  const firstUnused = context?.destinationLabels.findIndex((_, index) => !used.has(index + 1));
+  const destinationPosition = firstUnused != null && firstUnused >= 0 ? firstUnused + 1 : 1;
+  const mapping = {
+    id: makeId(),
+    pageIndex: manualIndexState.pageIndexes[manualIndexState.pageCursor],
+    rect,
+    description,
+    date: '',
+    type: 'link',
+    destinationPosition,
+    source: 'manual-draw',
+    originalNumber: null,
+  };
+  manualIndexState.mappings.push(mapping);
+  manualIndexState.selectedId = mapping.id;
+  manualIndexState.drawMode = false;
+  els.manualIndexDraw.classList.remove('active');
+  els.manualIndexDraw.textContent = 'Draw link region';
+  els.manualIndexOverlay.classList.remove('draw-mode');
+  renderManualIndexOverlay();
+  renderManualIndexMapTable();
+  els.manualIndexStatus.textContent = `Added region: ${description.slice(0, 90)}${description.length > 90 ? '…' : ''}`;
+}
+
+function cancelManualIndexDraw(removeMode = true) {
+  manualIndexState.dragStart = null;
+  manualIndexState.drawElement?.remove();
+  manualIndexState.drawElement = null;
+  if (removeMode) {
+    manualIndexState.drawMode = false;
+    els.manualIndexDraw?.classList.remove('active');
+    if (els.manualIndexDraw) els.manualIndexDraw.textContent = 'Draw link region';
+    els.manualIndexOverlay?.classList.remove('draw-mode');
+  }
+}
+
+function applyManualIndexMappings() {
+  const context = getManualIndexContext(manualIndexState.mode);
+  const state = getManualIndexModeState(manualIndexState.mode);
+  if (!context || !state) return;
+  const links = manualIndexState.mappings.filter((mapping) => mapping.type === 'link');
+  if (!links.length) return;
+  state.manualIndexMappings = {
+    sourceKey: context.sourceKey,
+    mappings: cloneManualMappings(manualIndexState.mappings),
+  };
+  const mode = manualIndexState.mode;
+  closeManualIndexDialog();
+  if (mode === 'build') { renderIndexPanel(); renderBuildTable(); updateBuildStatusSummary(); }
+  else if (mode === 'insert') renderInsertWorkspace();
+  else if (mode === 'reorder') renderReorderWorkspace();
+}
+
+function getManualMappingsForMode(mode) {
+  const context = getManualIndexContext(mode);
+  const stored = getManualIndexModeState(mode)?.manualIndexMappings;
+  if (!context || !stored || stored.sourceKey !== context.sourceKey) return null;
+  return stored.mappings || [];
+}
+
+function getManualActiveLinks(mode) {
+  const mappings = getManualMappingsForMode(mode);
+  if (!mappings) return null;
+  return mappings
+    .filter((mapping) => mapping.type === 'link')
+    .map((mapping) => ({ ...mapping, destinationPosition: Number(mapping.destinationPosition) }));
+}
+
+function validateManualActiveLinks(mode, finalCount) {
+  const links = getManualActiveLinks(mode);
+  if (links == null) return null;
+  if (!links.length) return { canRefresh: false, reason: 'manual mapping contains no active links.', manual: true };
+  const invalid = links.find((link) => !Number.isInteger(link.destinationPosition) || link.destinationPosition < 1 || link.destinationPosition > finalCount || !normalizePdfRect(link.rect));
+  if (invalid) return { canRefresh: false, reason: 'one or more manual links have an invalid destination or rectangle.', manual: true };
+  return { canRefresh: true, reason: '', manual: true, linkCount: links.length };
+}
 
 const SAFE_FILENAME_MAX_LENGTH = 120;
 const WINDOWS_RESERVED_BASENAMES = /^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/i;
@@ -1698,6 +2298,7 @@ async function loadBuildIndex(file) {
 
   buildState.indexFile = file;
   buildState.indexInfo = null;
+  buildState.manualIndexMappings = null;
   buildState.indexLoading = true;
   renderIndexPanel();
   renderBuildTable();
@@ -1948,6 +2549,29 @@ function normalizePdfRect(rect) {
   ];
 }
 
+
+function automaticRowAsActiveLink(row) {
+  return { ...row, destinationPosition: row.number, type: 'link' };
+}
+
+function getBuildActiveIndexLinks() {
+  const manual = getManualActiveLinks('build');
+  if (manual != null) return manual;
+  return (buildState.indexInfo?.rows || []).map(automaticRowAsActiveLink);
+}
+
+function getInsertActiveIndexLinks() {
+  const manual = getManualActiveLinks('insert');
+  if (manual != null) return manual;
+  return getInsertActiveIndexRows().map(automaticRowAsActiveLink);
+}
+
+function getReorderActiveIndexLinks() {
+  const manual = getManualActiveLinks('reorder');
+  if (manual != null) return manual;
+  return getReorderActiveIndexRows().map(automaticRowAsActiveLink);
+}
+
 function getIndexLinkValidation() {
   if (!buildState.indexFile || !els.createIndexLinks.checked) return { ok: true, message: '' };
   if (buildState.indexLoading) return { ok: false, message: 'Index analysis is still running.' };
@@ -1955,7 +2579,9 @@ function getIndexLinkValidation() {
 
   const rows = buildState.indexInfo?.rows || [];
   const contentCount = buildState.entries.length;
-  if (!rows.length) return { ok: false, message: 'No numbered index rows were detected. Turn off index linking to build without links.' };
+  const manualValidation = validateManualActiveLinks('build', contentCount);
+  if (manualValidation) return { ok: manualValidation.canRefresh, message: manualValidation.canRefresh ? '' : `Manual index mapping: ${manualValidation.reason}`, manual: true };
+  if (!rows.length) return { ok: false, message: 'No numbered index rows were detected. Use Manual mapping for an atypical index, or turn off index linking.' };
   if (!contentCount) return { ok: false, message: 'Add content PDFs so the detected index rows have destinations.' };
 
   const counts = new Map();
@@ -1986,7 +2612,8 @@ function getIndexLinkValidation() {
 
 function renderIndexPanel() {
   els.clearBuildIndex.disabled = !buildState.indexFile;
-  els.createIndexLinks.disabled = !buildState.indexFile || buildState.indexLoading || !buildState.indexInfo?.rows?.length;
+  els.manualBuildIndex.disabled = !buildState.indexFile || buildState.indexLoading;
+  els.createIndexLinks.disabled = !buildState.indexFile || buildState.indexLoading;
 
   if (!buildState.indexFile) {
     els.indexDetectionSummary.textContent = 'No index PDF loaded.';
@@ -2011,28 +2638,32 @@ function renderIndexPanel() {
 
   const info = buildState.indexInfo || { rows: [], pageCount: 0, existingLinkRectsUsed: 0 };
   const validation = getIndexLinkValidation();
+  const manualLinks = getManualActiveLinks('build');
   const reusedNote = info.existingLinkRectsUsed
     ? ` ${info.existingLinkRectsUsed} existing link rectangle${info.existingLinkRectsUsed === 1 ? '' : 's'} reused for placement.`
     : '';
-  els.indexDetectionSummary.textContent = `${buildState.indexFile.name} — ${info.pageCount} page${info.pageCount === 1 ? '' : 's'}, ${info.rows.length} numbered row${info.rows.length === 1 ? '' : 's'} detected.${reusedNote}`;
+  const manualNote = manualLinks != null ? ` Manual mapping applied: ${manualLinks.length} active link${manualLinks.length === 1 ? '' : 's'}.` : '';
+  els.indexDetectionSummary.textContent = `${buildState.indexFile.name} — ${info.pageCount} page${info.pageCount === 1 ? '' : 's'}, ${info.rows.length} numbered row${info.rows.length === 1 ? '' : 's'} detected.${reusedNote}${manualNote}`;
   els.indexDetectionSummary.className = `index-detection-summary${validation.ok || !els.createIndexLinks.checked ? ' success' : ' error'}`;
 
-  if (!info.rows.length) {
-    els.indexLinkBody.innerHTML = '<tr><td colspan="5" class="empty-cell">No numbered Description rows detected.</td></tr>';
+  const displayLinks = getBuildActiveIndexLinks();
+  if (!displayLinks.length) {
+    els.indexLinkBody.innerHTML = '<tr><td colspan="5" class="empty-cell">No automatic rows detected. Use Manual mapping to draw or assign atypical index entries.</td></tr>';
     return;
   }
 
   els.indexLinkBody.innerHTML = '';
-  info.rows.forEach((row) => {
-    const entry = buildState.entries[row.number - 1];
+  displayLinks.forEach((row, index) => {
+    const position = row.destinationPosition;
+    const entry = buildState.entries[position - 1];
     const destination = entry
-      ? `Position ${row.number} — ${entry.description || entry.file.name}`
-      : `No content PDF at position ${row.number}`;
+      ? `Position ${position} — ${entry.description || entry.file.name}`
+      : `No content PDF at position ${position}`;
     const tr = document.createElement('tr');
     tr.innerHTML = `
-      <td>${row.number}</td>
+      <td>${row.originalNumber || row.number || `M${index + 1}`}</td>
       <td>${row.pageIndex + 1}</td>
-      <td>${escapeHtml(row.description)}</td>
+      <td>${escapeHtml(row.description || '')}</td>
       <td>${escapeHtml(row.date || '')}</td>
       <td class="${entry ? 'index-destination' : 'index-destination missing'}">${escapeHtml(destination)}</td>
     `;
@@ -2533,13 +3164,13 @@ async function buildAndDownload() {
     }
 
     if (buildState.indexFile && els.createIndexLinks.checked) {
-      const rows = buildState.indexInfo?.rows || [];
+      const rows = getBuildActiveIndexLinks();
       setBuildStatus(`Creating ${rows.length} linked index entr${rows.length === 1 ? 'y' : 'ies'}…`);
       rows.forEach((row) => {
-        const targetPageIndex = contentPageTargets[row.number - 1];
+        const targetPageIndex = contentPageTargets[row.destinationPosition - 1];
         const sourcePage = output.getPage(indexPageStart + row.pageIndex);
         if (targetPageIndex == null || !sourcePage) {
-          throw new Error(`Could not map index row ${row.number} to its final content page.`);
+          throw new Error(`Could not map index entry to final position ${row.destinationPosition}.`);
         }
         addInternalLinkAnnotation(output, sourcePage, row.rect, targetPageIndex);
         indexLinksCreated += 1;
@@ -2628,6 +3259,7 @@ async function loadInsertBinder(file) {
   insertState.sourceTabs = [];
   insertState.sourceSections = [];
   insertState.indexRows = [];
+  insertState.manualIndexMappings = null;
   insertState.replacementIndexFile = null;
   insertState.replacementIndexInfo = null;
   insertState.replacementIndexLoading = false;
@@ -2716,6 +3348,7 @@ async function loadInsertReplacementIndex(file) {
 
   insertState.replacementIndexFile = file;
   insertState.replacementIndexInfo = null;
+  insertState.manualIndexMappings = null;
   insertState.replacementIndexLoading = true;
   renderInsertWorkspace();
   setInsertStatus(`Analyzing replacement index ${file.name}…`);
@@ -2768,7 +3401,10 @@ function getInsertActiveIndexRows() {
 }
 
 function getInsertOldIndexPageIndexes() {
-  return [...new Set((insertState.indexRows || []).map((row) => row.pageIndex))].sort((a, b) => a - b);
+  const pages = (insertState.indexRows || []).map((row) => row.pageIndex);
+  const stored = insertState.manualIndexMappings;
+  if (stored?.sourceKey?.startsWith('insert-existing:')) pages.push(...stored.mappings.map((mapping) => mapping.pageIndex));
+  return [...new Set(pages)].sort((a, b) => a - b);
 }
 
 function addInsertOperations(files) {
@@ -2964,7 +3600,9 @@ function validateInsertPlan(plan = getInsertPlan()) {
 function getInsertIndexLinkState(finalCount) {
   const rows = getInsertActiveIndexRows();
   const source = insertState.replacementIndexFile ? 'replacement' : 'existing';
-  if (!rows.length || !finalCount) return { canRefresh: false, reason: 'No numbered index rows were detected.', source };
+  const manualValidation = validateManualActiveLinks('insert', finalCount);
+  if (manualValidation) return { ...manualValidation, source };
+  if (!rows.length || !finalCount) return { canRefresh: false, reason: 'No numbered index rows were detected. Use Manual mapping for an atypical index.', source };
   const counts = new Map();
   rows.forEach((row) => counts.set(row.number, (counts.get(row.number) || 0) + 1));
   if ([...counts.values()].some((count) => count !== 1)) return { canRefresh: false, reason: 'duplicate index row numbers were detected.', source };
@@ -2977,6 +3615,7 @@ function getInsertIndexLinkState(finalCount) {
 
 function renderInsertIndexPanel(plan = getInsertPlan(), validation = validateInsertPlan(plan)) {
   els.clearInsertIndex.disabled = !insertState.replacementIndexFile;
+  els.manualInsertIndex.disabled = insertState.analyzing || insertState.replacementIndexLoading || !insertState.file || (!(insertState.replacementIndexFile) && !insertState.frontMatterPageIndexes.length);
 
   if (insertState.replacementIndexLoading) {
     els.insertIndexSummary.textContent = `Analyzing ${insertState.replacementIndexFile?.name || 'replacement index'}…`;
@@ -3000,31 +3639,37 @@ function renderInsertIndexPanel(plan = getInsertPlan(), validation = validateIns
     const reusedNote = info.existingLinkRectsUsed
       ? ` ${info.existingLinkRectsUsed} existing link rectangle${info.existingLinkRectsUsed === 1 ? '' : 's'} will be reused for placement.`
       : '';
-    els.insertIndexSummary.textContent = `${insertState.replacementIndexFile.name} — ${info.pageCount} page${info.pageCount === 1 ? '' : 's'}, ${info.rows.length} numbered row${info.rows.length === 1 ? '' : 's'} detected.${replacementNote}${reusedNote}`;
+    const manualLinks = getManualActiveLinks('insert');
+    const manualNote = manualLinks != null ? ` Manual mapping applied: ${manualLinks.length} active link${manualLinks.length === 1 ? '' : 's'}.` : '';
+    els.insertIndexSummary.textContent = `${insertState.replacementIndexFile.name} — ${info.pageCount} page${info.pageCount === 1 ? '' : 's'}, ${info.rows.length} numbered row${info.rows.length === 1 ? '' : 's'} detected.${replacementNote}${reusedNote}${manualNote}`;
     els.insertIndexSummary.className = `index-detection-summary${validation.indexCheck.canRefresh ? ' success' : ' error'}`;
   } else if (insertState.indexRows.length) {
-    els.insertIndexSummary.textContent = `Using existing index — ${insertState.indexRows.length} numbered row${insertState.indexRows.length === 1 ? '' : 's'} detected.`;
+    const manualLinks = getManualActiveLinks('insert');
+    const manualNote = manualLinks != null ? ` Manual mapping applied: ${manualLinks.length} active link${manualLinks.length === 1 ? '' : 's'}.` : '';
+    els.insertIndexSummary.textContent = `Using existing index — ${insertState.indexRows.length} numbered row${insertState.indexRows.length === 1 ? '' : 's'} detected.${manualNote}`;
     els.insertIndexSummary.className = `index-detection-summary${validation.indexCheck.canRefresh ? ' success' : ''}`;
   } else {
-    els.insertIndexSummary.textContent = 'Using existing front matter; no numbered index rows were detected.';
+    const manualLinks = getManualActiveLinks('insert');
+    els.insertIndexSummary.textContent = manualLinks != null ? `Using existing front matter — manual mapping applied with ${manualLinks.length} active link${manualLinks.length === 1 ? '' : 's'}.` : 'Using existing front matter; no numbered index rows were detected. Use Manual mapping for an atypical index.';
     els.insertIndexSummary.className = 'index-detection-summary';
   }
 
-  const rows = getInsertActiveIndexRows();
+  const rows = getInsertActiveIndexLinks();
   if (!rows.length) {
-    els.insertIndexBody.innerHTML = '<tr><td colspan="5" class="empty-cell">Add a replacement index PDF to preview and validate its rows.</td></tr>';
+    els.insertIndexBody.innerHTML = '<tr><td colspan="5" class="empty-cell">No usable automatic rows detected. Use Manual mapping to draw or assign atypical index entries.</td></tr>';
     return;
   }
 
   els.insertIndexBody.innerHTML = '';
-  rows.forEach((row) => {
-    const item = plan.items[row.number - 1];
+  rows.forEach((row, index) => {
+    const position = row.destinationPosition;
+    const item = plan.items[position - 1];
     const destination = item
-      ? `Position ${row.number} — ${item.description || (item.kind === 'new' ? item.operation.file.name : item.sourceSection.tabLabel)}`
-      : `No final content at position ${row.number}`;
+      ? `Position ${position} — ${item.description || (item.kind === 'new' ? item.operation.file.name : item.sourceSection.tabLabel)}`
+      : `No final content at position ${position}`;
     const tr = document.createElement('tr');
     tr.innerHTML = `
-      <td>${row.number}</td>
+      <td>${row.originalNumber || row.number || `M${index + 1}`}</td>
       <td>${row.pageIndex + 1}</td>
       <td>${escapeHtml(row.description || '')}</td>
       <td>${escapeHtml(row.date || '')}</td>
@@ -3267,10 +3912,12 @@ async function buildInsertedBinder() {
     if (els.insertCreateBookmarks.checked) {
       if (insertState.replacementIndexFile && replacementIndexStart != null) {
         bookmarks.push({ title: 'INDEX', pageIndex: replacementIndexStart });
-      } else if (insertState.indexRows.length) {
-        const firstIndexSourcePage = Math.min(...insertState.indexRows.map((row) => row.pageIndex));
-        const indexOutputPage = frontMatterMap.get(firstIndexSourcePage);
-        if (indexOutputPage != null) bookmarks.push({ title: 'INDEX', pageIndex: indexOutputPage });
+      } else {
+        const indexPages = getInsertOldIndexPageIndexes();
+        if (indexPages.length) {
+          const indexOutputPage = frontMatterMap.get(indexPages[0]);
+          if (indexOutputPage != null) bookmarks.push({ title: 'INDEX', pageIndex: indexOutputPage });
+        }
       }
     }
 
@@ -3309,7 +3956,7 @@ async function buildInsertedBinder() {
     }
 
     const indexState = getInsertIndexLinkState(plan.items.length);
-    const activeIndexRows = getInsertActiveIndexRows();
+    const activeIndexRows = getInsertActiveIndexLinks();
     let refreshedLinks = 0;
     if (indexState.canRefresh && els.insertRefreshIndexLinks.checked) {
       const actionWord = insertState.replacementIndexFile ? 'Creating' : 'Refreshing';
@@ -3318,8 +3965,8 @@ async function buildInsertedBinder() {
         const sourcePageIndex = insertState.replacementIndexFile
           ? (replacementIndexStart == null ? null : replacementIndexStart + row.pageIndex)
           : frontMatterMap.get(row.pageIndex);
-        const targetPageIndex = contentPageTargets[row.number - 1];
-        if (sourcePageIndex == null || targetPageIndex == null) throw new Error(`Could not map index row ${row.number}.`);
+        const targetPageIndex = contentPageTargets[row.destinationPosition - 1];
+        if (sourcePageIndex == null || targetPageIndex == null) throw new Error(`Could not map index entry to final position ${row.destinationPosition}.`);
         addInternalLinkAnnotation(output, output.getPage(sourcePageIndex), row.rect, targetPageIndex);
         refreshedLinks += 1;
       });
@@ -3380,6 +4027,7 @@ async function loadReorderBinder(file) {
   reorderState.sourceTabs = [];
   reorderState.sourceSections = [];
   reorderState.indexRows = [];
+  reorderState.manualIndexMappings = null;
   reorderState.items = [];
   reorderState.replacementIndexFile = null;
   reorderState.replacementIndexInfo = null;
@@ -3481,6 +4129,7 @@ async function loadReorderReplacementIndex(file) {
 
   reorderState.replacementIndexFile = file;
   reorderState.replacementIndexInfo = null;
+  reorderState.manualIndexMappings = null;
   reorderState.replacementIndexLoading = true;
   renderReorderWorkspace();
   setReorderStatus(`Analyzing replacement index ${file.name}…`);
@@ -3533,14 +4182,19 @@ function getReorderActiveIndexRows() {
 }
 
 function getReorderOldIndexPageIndexes() {
-  return [...new Set((reorderState.indexRows || []).map((row) => row.pageIndex))].sort((a, b) => a - b);
+  const pages = (reorderState.indexRows || []).map((row) => row.pageIndex);
+  const stored = reorderState.manualIndexMappings;
+  if (stored?.sourceKey?.startsWith('reorder-existing:')) pages.push(...stored.mappings.map((mapping) => mapping.pageIndex));
+  return [...new Set(pages)].sort((a, b) => a - b);
 }
 
 function getReorderIndexLinkState() {
   const rows = getReorderActiveIndexRows();
   const finalCount = reorderState.items.length;
   const source = reorderState.replacementIndexFile ? 'replacement' : 'existing';
-  if (!rows.length || !finalCount) return { canRefresh: false, reason: 'No numbered index rows were detected.', source };
+  const manualValidation = validateManualActiveLinks('reorder', finalCount);
+  if (manualValidation) return { ...manualValidation, source };
+  if (!rows.length || !finalCount) return { canRefresh: false, reason: 'No numbered index rows were detected. Use Manual mapping for an atypical index.', source };
   const counts = new Map();
   rows.forEach((row) => counts.set(row.number, (counts.get(row.number) || 0) + 1));
   if ([...counts.values()].some((count) => count !== 1)) return { canRefresh: false, reason: 'duplicate index row numbers were detected.', source };
@@ -3590,6 +4244,7 @@ function validateReorderPlan() {
 
 function renderReorderWorkspace() {
   els.clearReorderIndex.disabled = !reorderState.replacementIndexFile;
+  els.manualReorderIndex.disabled = reorderState.analyzing || reorderState.replacementIndexLoading || !reorderState.file || (!(reorderState.replacementIndexFile) && !reorderState.frontMatterPageIndexes.length);
   els.resetReorderOrder.disabled = !reorderState.items.length || !isReorderChanged();
 
   if (!reorderState.file) {
@@ -3672,31 +4327,37 @@ function renderReorderIndexPanel(validation = validateReorderPlan()) {
     const reusedNote = info.existingLinkRectsUsed
       ? ` ${info.existingLinkRectsUsed} existing link rectangle${info.existingLinkRectsUsed === 1 ? '' : 's'} will be reused for placement.`
       : '';
-    els.reorderIndexSummary.textContent = `${reorderState.replacementIndexFile.name} — ${info.pageCount} page${info.pageCount === 1 ? '' : 's'}, ${info.rows.length} numbered row${info.rows.length === 1 ? '' : 's'} detected.${replacementNote}${reusedNote}`;
+    const manualLinks = getManualActiveLinks('reorder');
+    const manualNote = manualLinks != null ? ` Manual mapping applied: ${manualLinks.length} active link${manualLinks.length === 1 ? '' : 's'}.` : '';
+    els.reorderIndexSummary.textContent = `${reorderState.replacementIndexFile.name} — ${info.pageCount} page${info.pageCount === 1 ? '' : 's'}, ${info.rows.length} numbered row${info.rows.length === 1 ? '' : 's'} detected.${replacementNote}${reusedNote}${manualNote}`;
     els.reorderIndexSummary.className = `index-detection-summary${validation.indexCheck.canRefresh ? ' success' : ' error'}`;
   } else if (reorderState.indexRows.length) {
-    els.reorderIndexSummary.textContent = `Using existing index — ${reorderState.indexRows.length} numbered row${reorderState.indexRows.length === 1 ? '' : 's'} detected.`;
+    const manualLinks = getManualActiveLinks('reorder');
+    const manualNote = manualLinks != null ? ` Manual mapping applied: ${manualLinks.length} active link${manualLinks.length === 1 ? '' : 's'}.` : '';
+    els.reorderIndexSummary.textContent = `Using existing index — ${reorderState.indexRows.length} numbered row${reorderState.indexRows.length === 1 ? '' : 's'} detected.${manualNote}`;
     els.reorderIndexSummary.className = `index-detection-summary${validation.indexCheck.canRefresh ? ' success' : ''}`;
   } else {
-    els.reorderIndexSummary.textContent = 'Using existing front matter; no numbered index rows were detected.';
+    const manualLinks = getManualActiveLinks('reorder');
+    els.reorderIndexSummary.textContent = manualLinks != null ? `Using existing front matter — manual mapping applied with ${manualLinks.length} active link${manualLinks.length === 1 ? '' : 's'}.` : 'Using existing front matter; no numbered index rows were detected. Use Manual mapping for an atypical index.';
     els.reorderIndexSummary.className = 'index-detection-summary';
   }
 
-  const rows = getReorderActiveIndexRows();
+  const rows = getReorderActiveIndexLinks();
   if (!rows.length) {
-    els.reorderIndexBody.innerHTML = '<tr><td colspan="5" class="empty-cell">Add a replacement index PDF to preview and validate its rows.</td></tr>';
+    els.reorderIndexBody.innerHTML = '<tr><td colspan="5" class="empty-cell">No usable automatic rows detected. Use Manual mapping to draw or assign atypical index entries.</td></tr>';
     return;
   }
 
   els.reorderIndexBody.innerHTML = '';
-  rows.forEach((row) => {
-    const item = reorderState.items[row.number - 1];
+  rows.forEach((row, index) => {
+    const position = row.destinationPosition;
+    const item = reorderState.items[position - 1];
     const destination = item
-      ? `Position ${row.number} — ${item.description}`
-      : `No final content at position ${row.number}`;
+      ? `Position ${position} — ${item.description}`
+      : `No final content at position ${position}`;
     const tr = document.createElement('tr');
     tr.innerHTML = `
-      <td>${row.number}</td>
+      <td>${row.originalNumber || row.number || `M${index + 1}`}</td>
       <td>${row.pageIndex + 1}</td>
       <td>${escapeHtml(row.description || '')}</td>
       <td>${escapeHtml(row.date || '')}</td>
@@ -3876,10 +4537,12 @@ async function buildReorderedBinder() {
     if (els.reorderCreateBookmarks.checked) {
       if (reorderState.replacementIndexFile && replacementIndexStart != null) {
         bookmarks.push({ title: 'INDEX', pageIndex: replacementIndexStart });
-      } else if (reorderState.indexRows.length) {
-        const firstIndexSourcePage = Math.min(...reorderState.indexRows.map((row) => row.pageIndex));
-        const indexOutputPage = frontMatterMap.get(firstIndexSourcePage);
-        if (indexOutputPage != null) bookmarks.push({ title: 'INDEX', pageIndex: indexOutputPage });
+      } else {
+        const indexPages = getReorderOldIndexPageIndexes();
+        if (indexPages.length) {
+          const indexOutputPage = frontMatterMap.get(indexPages[0]);
+          if (indexOutputPage != null) bookmarks.push({ title: 'INDEX', pageIndex: indexOutputPage });
+        }
       }
     }
 
@@ -3903,7 +4566,7 @@ async function buildReorderedBinder() {
     }
 
     const indexState = getReorderIndexLinkState();
-    const activeIndexRows = getReorderActiveIndexRows();
+    const activeIndexRows = getReorderActiveIndexLinks();
     let refreshedLinks = 0;
     if (indexState.canRefresh && els.reorderRefreshIndexLinks.checked) {
       const actionWord = reorderState.replacementIndexFile ? 'Creating' : 'Refreshing';
@@ -3912,8 +4575,8 @@ async function buildReorderedBinder() {
         const sourcePageIndex = reorderState.replacementIndexFile
           ? (replacementIndexStart == null ? null : replacementIndexStart + row.pageIndex)
           : frontMatterMap.get(row.pageIndex);
-        const targetPageIndex = contentPageTargets[row.number - 1];
-        if (sourcePageIndex == null || targetPageIndex == null) throw new Error(`Could not map index row ${row.number}.`);
+        const targetPageIndex = contentPageTargets[row.destinationPosition - 1];
+        if (sourcePageIndex == null || targetPageIndex == null) throw new Error(`Could not map index entry to final position ${row.destinationPosition}.`);
         addInternalLinkAnnotation(output, output.getPage(sourcePageIndex), row.rect, targetPageIndex);
         refreshedLinks += 1;
       });

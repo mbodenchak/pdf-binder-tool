@@ -1,5 +1,35 @@
-# PDF Binder Tool — browser-only MVP v0.11.1
+# PDF Binder Tool — browser-only MVP v0.12.0
 
+
+## v0.12.0 — Manual mapping for atypical indexes
+
+This release adds a fallback index-link editor for indexes that do not fit the usual sequential No. / Description / Date table. Automatic parsing remains the default. Use **Manual mapping** only when the index structure is unusual or the automatic destinations need correction.
+
+Manual mapping is available in **Build Binder**, **Insert Documents**, and **Reorder Binder**. It can:
+
+- render the actual index/front-matter PDF page in a mapping dialog;
+- start from automatically detected rows and, when available, raw existing link rectangles even when the numbered-row parser cannot understand the index;
+- reassign a detected entry to any final tab position;
+- mark a detected region as **Heading** or **Ignore** so no PDF link is created there;
+- draw a new clickable rectangle directly over index text when no row was detected;
+- extract the text inside a newly drawn rectangle when PDF text is available;
+- allow non-sequential mappings and multiple entries pointing to the same tab position;
+- preserve the normal Fit Page destination behavior;
+- use manually identified existing index pages when creating the top-level `INDEX` bookmark.
+
+The automatic parser and existing-link rectangle reuse behavior are unchanged when manual mapping is not applied. To return to the automatic interpretation while the mapper is open, use **Reset to automatic regions**.
+
+### Manual mapping workflow
+
+1. Load the index or existing binder as usual.
+2. Click **Manual mapping** in the relevant Index panel.
+3. Review the highlighted regions.
+4. Change a region's Type to Link, Heading, or Ignore and choose the desired final position for links.
+5. If an entry was not detected, click **Draw link region** and drag over the desired index text.
+6. Click **Apply manual mapping**.
+7. Build the binder normally.
+
+Manual mapping is intentionally permissive. It does not require rows 1 through N or a one-to-one relationship between index entries and tabs. The only hard requirement is that every active Link region point to a valid final binder position.
 
 ## v0.11.1 — Text-sized index link geometry
 

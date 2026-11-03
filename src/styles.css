@@ -292,3 +292,56 @@ td input { width: 100%; min-width: 130px; border: 1px solid #ccd4df; border-radi
 .reorder-table tr.drag-over { background: #eef3f8; }
 .reorder-table tr.reorder-moved { background: #f5f9fd; }
 .reorder-table tr.reorder-moved.drag-over { background: #e9f1f8; }
+
+/* v0.12.0: manual mapping for atypical indexes */
+.index-heading-actions { display: flex; align-items: center; gap: 10px; justify-content: flex-end; flex-wrap: wrap; }
+.index-heading-actions button { white-space: nowrap; }
+.manual-index-dialog {
+  width: min(1480px, calc(100vw - 24px));
+  max-height: calc(100vh - 24px);
+  padding: 0;
+  border: 1px solid #cfd6df;
+  border-radius: 16px;
+  box-shadow: 0 24px 70px rgba(17,24,39,.24);
+  color: #18212f;
+}
+.manual-index-dialog::backdrop { background: rgba(17,24,39,.52); }
+.manual-index-shell { display: flex; flex-direction: column; max-height: calc(100vh - 26px); background: #fff; }
+.manual-index-heading { display: flex; justify-content: space-between; gap: 22px; align-items: flex-start; padding: 18px 20px 14px; border-bottom: 1px solid #e4e8ee; }
+.manual-index-heading h2 { margin: 0; font-size: 1.2rem; }
+.manual-index-heading p:not(.eyebrow) { max-width: 980px; margin: 7px 0 0; color: #687385; font-size: .84rem; line-height: 1.45; }
+.manual-index-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 10px 14px; border-bottom: 1px solid #e4e8ee; background: #fafbfd; }
+.manual-index-toolbar #manual-index-page-label { font-weight: 800; color: #455162; min-width: 140px; }
+.manual-index-toolbar #manual-index-status { margin-left: auto; }
+.manual-index-toolbar button.active { background: #1f5f88; color: #fff; border-color: #1f5f88; }
+.manual-index-layout { display: grid; grid-template-columns: minmax(500px, 1.15fr) minmax(460px, .85fr); gap: 12px; padding: 12px; min-height: 0; overflow: hidden; flex: 1 1 auto; }
+.manual-index-preview-wrap { min-height: 0; overflow: auto; border: 1px solid #dce2e9; border-radius: 10px; background: #eef1f5; padding: 10px; }
+.manual-index-preview { position: relative; width: max-content; margin: 0 auto; box-shadow: 0 2px 14px rgba(17,24,39,.12); background: #fff; }
+#manual-index-canvas { display: block; height: auto; }
+.manual-index-overlay { position: absolute; inset: 0; pointer-events: auto; }
+.manual-index-overlay.draw-mode { cursor: crosshair; }
+.manual-link-region { position: absolute; border: 2px solid rgba(31,95,136,.78); background: rgba(31,95,136,.10); border-radius: 3px; box-sizing: border-box; cursor: pointer; }
+.manual-link-region.heading { border-color: rgba(128,94,30,.72); background: rgba(204,153,51,.10); }
+.manual-link-region.ignore { border-color: rgba(125,132,143,.62); background: rgba(125,132,143,.08); }
+.manual-link-region.selected { outline: 3px solid rgba(30,120,80,.38); outline-offset: 2px; }
+.manual-draw-region { position: absolute; border: 2px dashed #1f5f88; background: rgba(31,95,136,.08); pointer-events: none; }
+.manual-index-map-wrap { min-height: 0; overflow: auto; border: 1px solid #dce2e9; border-radius: 10px; }
+.manual-index-map-table { width: 100%; border-collapse: collapse; }
+.manual-index-map-table th, .manual-index-map-table td { padding: 7px 8px; border-bottom: 1px solid #e8ebef; vertical-align: top; font-size: .78rem; }
+.manual-index-map-table th { position: sticky; top: 0; z-index: 2; background: #f6f8fa; color: #526071; text-align: left; }
+.manual-index-map-table td:nth-child(2) { min-width: 210px; }
+.manual-index-map-table select { min-width: 110px; max-width: 180px; }
+.manual-map-description { display: block; color: #2b3441; line-height: 1.3; }
+.manual-map-source { display: block; margin-top: 3px; color: #7a8492; font-size: .7rem; }
+.manual-index-footer { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 12px 16px 15px; border-top: 1px solid #e4e8ee; color: #667283; font-size: .8rem; }
+.manual-index-footer > div { display: flex; gap: 8px; }
+.manual-index-footer button { border: 1px solid #c7d0dc; background: #fff; border-radius: 8px; padding: 9px 13px; font-weight: 700; }
+.manual-index-footer .primary { background: #1f5f88; color: #fff; border-color: #1f5f88; }
+.manual-index-applied { color: #2d6c46; font-weight: 800; }
+@media (max-width: 980px) {
+  .manual-index-layout { grid-template-columns: 1fr; overflow: auto; }
+  .manual-index-preview-wrap { max-height: 58vh; }
+  .manual-index-map-wrap { max-height: 38vh; }
+  .manual-index-toolbar #manual-index-status { width: 100%; margin-left: 0; }
+  .index-heading-actions { justify-content: flex-start; }
+}
