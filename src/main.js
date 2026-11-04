@@ -74,6 +74,14 @@ const els = {
   indexDetectionSummary: document.querySelector('#index-detection-summary'),
   indexLinkBody: document.querySelector('#index-link-body'),
   manualBuildIndex: document.querySelector('#manual-build-index'),
+  matchBuildIndex: document.querySelector('#match-build-index'),
+  buildMatchDialog: document.querySelector('#build-match-dialog'),
+  closeBuildMatch: document.querySelector('#close-build-match'),
+  cancelBuildMatch: document.querySelector('#cancel-build-match'),
+  rerunBuildMatch: document.querySelector('#rerun-build-match'),
+  applyBuildMatch: document.querySelector('#apply-build-match'),
+  buildMatchSummary: document.querySelector('#build-match-summary'),
+  buildMatchBody: document.querySelector('#build-match-body'),
   insertBuildTabs: document.querySelector('#insert-build-tabs'),
   createBuildBookmarks: document.querySelector('#create-build-bookmarks'),
   buildManifest: document.querySelector('#build-manifest'),
@@ -176,6 +184,7 @@ const buildState = {
   indexInfo: null,
   indexLoading: false,
   manualIndexMappings: null,
+  matchAssignments: new Map(),
 };
 
 const insertState = {
@@ -311,6 +320,12 @@ els.bulkPasteDialog.addEventListener('cancel', (event) => {
 });
 
 els.manualBuildIndex.addEventListener('click', () => openManualIndexDialog('build'));
+els.matchBuildIndex.addEventListener('click', openBuildMatchDialog);
+els.closeBuildMatch.addEventListener('click', closeBuildMatchDialog);
+els.cancelBuildMatch.addEventListener('click', closeBuildMatchDialog);
+els.rerunBuildMatch.addEventListener('click', () => { recomputeBuildMatchProposal(); renderBuildMatchDialog(); });
+els.applyBuildMatch.addEventListener('click', applyBuildMatchOrder);
+els.buildMatchDialog.addEventListener('cancel', (event) => { event.preventDefault(); closeBuildMatchDialog(); });
 els.manualInsertIndex.addEventListener('click', () => openManualIndexDialog('insert'));
 els.manualReorderIndex.addEventListener('click', () => openManualIndexDialog('reorder'));
 els.closeManualIndex.addEventListener('click', closeManualIndexDialog);
@@ -349,6 +364,7 @@ els.clearBuildIndex.addEventListener('click', () => {
   buildState.indexInfo = null;
   buildState.indexLoading = false;
   buildState.manualIndexMappings = null;
+  buildState.matchAssignments = new Map();
   renderIndexPanel();
   renderBuildTable();
   updateBuildStatusSummary();
@@ -2284,6 +2300,7 @@ async function importSplitManifest(event) {
 function addBuildFiles(files) {
   const pdfs = files.filter(isPdfFile);
   buildState.entries.push(...pdfs.map(makeBuildEntry));
+  buildState.matchAssignments = new Map();
   applyBuildManifestOrder();
   applyBuildManifestMetadata();
   renderBuildTable();
@@ -2376,6 +2393,7 @@ async function loadBuildIndex(file) {
   buildState.indexFile = file;
   buildState.indexInfo = null;
   buildState.manualIndexMappings = null;
+  buildState.matchAssignments = new Map();
   buildState.indexLoading = true;
   renderIndexPanel();
   renderBuildTable();
@@ -2711,6 +2729,9 @@ function getIndexLinkValidation() {
 function renderIndexPanel() {
   els.clearBuildIndex.disabled = !buildState.indexFile;
   els.manualBuildIndex.disabled = !buildState.indexFile || buildState.indexLoading;
+  const buildMatchValidation = getBuildMatchValidation();
+  els.matchBuildIndex.disabled = !buildMatchValidation.ok;
+  els.matchBuildIndex.title = buildMatchValidation.ok ? 'Propose a content-PDF order from the numbered index.' : buildMatchValidation.message;
   els.createIndexLinks.disabled = !buildState.indexFile || buildState.indexLoading;
 
   if (!buildState.indexFile) {
@@ -2915,6 +2936,241 @@ function countManifestTabMatches() {
   return buildState.manifest.sections.filter((section) => section.tabFilename && loaded.has(section.tabFilename)).length;
 }
 
+function getBuildMatchValidation() {
+  if (!buildState.indexFile) return { ok: false, message: 'Add an index PDF first.' };
+  if (buildState.indexLoading) return { ok: false, message: 'Index analysis is still running.' };
+  if (buildState.indexInfo?.error) return { ok: false, message: `Could not analyze the index: ${buildState.indexInfo.error}` };
+  if (!buildState.entries.length) return { ok: false, message: 'Add content PDFs first.' };
+  const rows = buildState.indexInfo?.rows || [];
+  const sequential = validateSequentialIndexRows(rows, buildState.entries.length);
+  if (!sequential.ok) {
+    return { ok: false, message: `Automatic matching needs one numbered index row per loaded PDF: ${sequential.reason}` };
+  }
+  return { ok: true, message: '' };
+}
+
+function canonicalBuildMatchDate(value) {
+  const text = String(value || '').trim();
+  let match = text.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{2,4})$/);
+  if (match) {
+    let year = Number(match[3]);
+    if (year < 100) year += year >= 70 ? 1900 : 2000;
+    return `${year}-${String(Number(match[1])).padStart(2, '0')}-${String(Number(match[2])).padStart(2, '0')}`;
+  }
+  match = text.match(/^(\d{4})[.\/-](\d{1,2})[.\/-](\d{1,2})$/);
+  if (match) return `${match[1]}-${String(Number(match[2])).padStart(2, '0')}-${String(Number(match[3])).padStart(2, '0')}`;
+  match = text.match(/^(\d{2})[.\/-](\d{1,2})[.\/-](\d{1,2})$/);
+  if (match) {
+    const year = Number(match[1]) + (Number(match[1]) >= 70 ? 1900 : 2000);
+    return `${year}-${String(Number(match[2])).padStart(2, '0')}-${String(Number(match[3])).padStart(2, '0')}`;
+  }
+  return '';
+}
+
+function buildMatchFilenameInfo(filename) {
+  let text = stripExtension(filename).replace(/^\s*\d+\s*[-_]\s*/, '').trim();
+  let date = '';
+  const datePrefix = text.match(/^(\d{2,4}[.\/-]\d{1,2}[.\/-]\d{1,2})(?:\s+|\s*[-_]\s*)(.+)$/);
+  if (datePrefix) {
+    date = canonicalBuildMatchDate(datePrefix[1]);
+    text = datePrefix[2].trim();
+  }
+  text = text.replace(/\^+/g, ':').replace(/_+/g, '/').replace(/\s+/g, ' ').trim();
+  return { description: text, date };
+}
+
+function buildMatchScore(entry, row) {
+  const filenameInfo = buildMatchFilenameInfo(entry.file.name);
+  const descriptions = [...new Set([
+    String(entry.description || '').trim(),
+    humanizeFilename(entry.file.name),
+    filenameInfo.description,
+  ].filter(Boolean))];
+  let score = descriptions.reduce((best, description) => Math.max(best, syncSimilarity(description, row.description)), 0);
+  const entryDate = canonicalBuildMatchDate(entry.date) || filenameInfo.date;
+  const rowDate = canonicalBuildMatchDate(row.date);
+  if (entryDate && rowDate) {
+    score += entryDate === rowDate ? 0.12 : -0.04;
+  }
+  return Math.max(0, Math.min(1, score));
+}
+
+// Hungarian algorithm (minimum-cost assignment), used here with cost = 1 - similarity.
+// It gives a globally one-to-one proposal instead of letting two similar rows claim the same PDF.
+function maximizeBuildMatchAssignment(scoreMatrix) {
+  const n = scoreMatrix.length;
+  if (!n) return [];
+  const m = scoreMatrix[0].length;
+  if (n !== m) throw new Error('Content/index counts must match before automatic ordering.');
+  const u = Array(n + 1).fill(0);
+  const v = Array(m + 1).fill(0);
+  const p = Array(m + 1).fill(0);
+  const way = Array(m + 1).fill(0);
+
+  for (let i = 1; i <= n; i += 1) {
+    p[0] = i;
+    let j0 = 0;
+    const minv = Array(m + 1).fill(Infinity);
+    const used = Array(m + 1).fill(false);
+    do {
+      used[j0] = true;
+      const i0 = p[j0];
+      let delta = Infinity;
+      let j1 = 0;
+      for (let j = 1; j <= m; j += 1) {
+        if (used[j]) continue;
+        const cur = (1 - scoreMatrix[i0 - 1][j - 1]) - u[i0] - v[j];
+        if (cur < minv[j]) { minv[j] = cur; way[j] = j0; }
+        if (minv[j] < delta) { delta = minv[j]; j1 = j; }
+      }
+      for (let j = 0; j <= m; j += 1) {
+        if (used[j]) { u[p[j]] += delta; v[j] -= delta; }
+        else minv[j] -= delta;
+      }
+      j0 = j1;
+    } while (p[j0] !== 0);
+
+    do {
+      const j1 = way[j0];
+      p[j0] = p[j1];
+      j0 = j1;
+    } while (j0 !== 0);
+  }
+
+  const assignment = Array(n).fill(-1);
+  for (let j = 1; j <= m; j += 1) {
+    if (p[j] > 0) assignment[p[j] - 1] = j - 1;
+  }
+  return assignment;
+}
+
+function recomputeBuildMatchProposal() {
+  const validation = getBuildMatchValidation();
+  buildState.matchAssignments = new Map();
+  if (!validation.ok) return validation;
+  const rows = [...buildState.indexInfo.rows].sort((a, b) => a.number - b.number);
+  const scores = rows.map((row) => buildState.entries.map((entry) => buildMatchScore(entry, row)));
+  const assignment = maximizeBuildMatchAssignment(scores);
+  rows.forEach((row, rowIndex) => {
+    const entryIndex = assignment[rowIndex];
+    const entry = buildState.entries[entryIndex];
+    buildState.matchAssignments.set(row.number, {
+      entryId: entry.id,
+      score: scores[rowIndex][entryIndex],
+      manual: false,
+    });
+  });
+  return { ok: true, message: '' };
+}
+
+function openBuildMatchDialog() {
+  const validation = recomputeBuildMatchProposal();
+  renderBuildMatchDialog();
+  if (!validation.ok) {
+    setBuildStatus(validation.message, 'error');
+    return;
+  }
+  if (typeof els.buildMatchDialog.showModal === 'function') els.buildMatchDialog.showModal();
+  else els.buildMatchDialog.setAttribute('open', '');
+}
+
+function closeBuildMatchDialog() {
+  if (els.buildMatchDialog.open && typeof els.buildMatchDialog.close === 'function') els.buildMatchDialog.close();
+  else els.buildMatchDialog.removeAttribute('open');
+}
+
+function buildMatchAssignmentIsValid() {
+  const rows = buildState.indexInfo?.rows || [];
+  if (buildState.matchAssignments.size !== rows.length) return false;
+  const ids = [...buildState.matchAssignments.values()].map((assignment) => assignment.entryId);
+  return ids.length === buildState.entries.length && new Set(ids).size === ids.length && ids.every((id) => buildState.entries.some((entry) => entry.id === id));
+}
+
+function renderBuildMatchDialog() {
+  const validation = getBuildMatchValidation();
+  if (!validation.ok) {
+    els.buildMatchSummary.textContent = validation.message;
+    els.buildMatchSummary.className = 'status error';
+    els.buildMatchBody.innerHTML = `<tr><td colspan="5" class="empty-cell">${escapeHtml(validation.message)}</td></tr>`;
+    els.applyBuildMatch.disabled = true;
+    return;
+  }
+
+  const rows = [...buildState.indexInfo.rows].sort((a, b) => a.number - b.number);
+  if (!buildState.matchAssignments.size) recomputeBuildMatchProposal();
+  els.buildMatchBody.innerHTML = '';
+
+  rows.forEach((row) => {
+    const assignment = buildState.matchAssignments.get(row.number);
+    const selectedEntry = buildState.entries.find((entry) => entry.id === assignment?.entryId);
+    const confidence = syncConfidence(assignment?.score || 0, Boolean(assignment?.manual));
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${row.number}</td>
+      <td>${escapeHtml(row.description || '')}</td>
+      <td>${escapeHtml(row.date || '')}</td>
+      <td><select class="build-match-source-select" aria-label="Content PDF for index position ${row.number}"></select></td>
+      <td><span class="sync-confidence ${confidence.className}">${confidence.label}</span><span class="sync-score">${Math.round((assignment?.score || 0) * 100)}% similarity</span></td>
+    `;
+    const select = tr.querySelector('select');
+    buildState.entries.forEach((entry) => {
+      const option = document.createElement('option');
+      option.value = entry.id;
+      option.textContent = entry.file.name;
+      option.selected = entry.id === selectedEntry?.id;
+      select.append(option);
+    });
+    select.addEventListener('change', () => changeBuildMatchAssignment(row.number, select.value));
+    els.buildMatchBody.append(tr);
+  });
+
+  const assignments = [...buildState.matchAssignments.values()];
+  const strongGood = assignments.filter((a) => a.score >= 0.72 && !a.manual).length;
+  const review = assignments.filter((a) => a.score < 0.72 && !a.manual).length;
+  const manual = assignments.filter((a) => a.manual).length;
+  els.buildMatchSummary.textContent = `${rows.length} index rows mapped one-to-one to ${buildState.entries.length} PDFs. ${strongGood} strong/good automatic match${strongGood === 1 ? '' : 'es'}${review ? `; ${review} row${review === 1 ? '' : 's'} should be reviewed` : ''}${manual ? `; ${manual} manual override${manual === 1 ? '' : 's'}` : ''}.`;
+  els.buildMatchSummary.className = `status ${review ? '' : 'success'}`.trim();
+  els.applyBuildMatch.disabled = !buildMatchAssignmentIsValid();
+}
+
+function changeBuildMatchAssignment(rowNumber, newEntryId) {
+  const current = buildState.matchAssignments.get(rowNumber);
+  if (!current || current.entryId === newEntryId) return;
+  const conflictingRow = [...buildState.matchAssignments.entries()].find(([number, assignment]) => number !== rowNumber && assignment.entryId === newEntryId);
+  const oldEntryId = current.entryId;
+  const rowsByNumber = new Map((buildState.indexInfo?.rows || []).map((row) => [row.number, row]));
+  const selectedEntry = buildState.entries.find((entry) => entry.id === newEntryId);
+  const currentRow = rowsByNumber.get(rowNumber);
+  buildState.matchAssignments.set(rowNumber, {
+    entryId: newEntryId,
+    score: selectedEntry && currentRow ? buildMatchScore(selectedEntry, currentRow) : 0,
+    manual: true,
+  });
+  if (conflictingRow) {
+    const [otherNumber] = conflictingRow;
+    const oldEntry = buildState.entries.find((entry) => entry.id === oldEntryId);
+    const otherRow = rowsByNumber.get(otherNumber);
+    buildState.matchAssignments.set(otherNumber, {
+      entryId: oldEntryId,
+      score: oldEntry && otherRow ? buildMatchScore(oldEntry, otherRow) : 0,
+      manual: true,
+    });
+  }
+  renderBuildMatchDialog();
+}
+
+function applyBuildMatchOrder() {
+  if (!buildMatchAssignmentIsValid()) return;
+  const rows = [...buildState.indexInfo.rows].sort((a, b) => a.number - b.number);
+  const byId = new Map(buildState.entries.map((entry) => [entry.id, entry]));
+  buildState.entries = rows.map((row) => byId.get(buildState.matchAssignments.get(row.number).entryId)).filter(Boolean);
+  const reviewed = [...buildState.matchAssignments.values()].filter((assignment) => assignment.manual || assignment.score < 0.72).length;
+  closeBuildMatchDialog();
+  renderBuildTable();
+  updateBuildStatusSummary();
+  setBuildStatus(`Applied index-based content order for ${buildState.entries.length} PDF${buildState.entries.length === 1 ? '' : 's'}${reviewed ? `; ${reviewed} mapping${reviewed === 1 ? '' : 's'} were manual or lower-confidence` : ''}. Review the Final binder order before building.`, reviewed ? '' : 'success');
+}
+
 function renderBuildTable() {
   renderIndexPanel();
   els.clearBuildTabs.disabled = buildState.tabFiles.length === 0;
@@ -2981,6 +3237,7 @@ function renderBuildTable() {
     row.querySelector('[data-action="down"]').addEventListener('click', () => moveBuildEntry(index, 1));
     row.querySelector('[data-action="remove"]').addEventListener('click', () => {
       buildState.entries.splice(index, 1);
+      buildState.matchAssignments = new Map();
       renderBuildTable();
       updateBuildStatusSummary();
     });
