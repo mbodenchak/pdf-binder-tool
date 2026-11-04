@@ -1,6 +1,28 @@
-# PDF Binder Tool — browser-only MVP v0.13.0
+# PDF Binder Tool — browser-only MVP v0.14.0
 
-## v0.13.0 — Sync Binder to New Index
+
+## v0.14.0 — Match loose content PDFs to a supplied index
+
+Build Binder now includes an optional **Match PDFs to index** assistant. This is intended for building a binder from loose PDFs when the supplied index already defines the desired final order.
+
+- Load the content PDFs and the finished index PDF as usual.
+- Click **Match PDFs to index** in the Index & links panel.
+- The app compares each numbered index Description/Date against the loaded PDF filenames and current descriptions.
+- Matching is globally one-to-one: the proposal cannot assign the same PDF to two index rows.
+- Common date-prefixed filenames such as `26.05.15 Email ...` are recognized for matching; the date prefix is compared separately when possible rather than being treated as part of the document title.
+- Proposed matches are labeled Strong, Good, Review, or Uncertain.
+- Every row has a PDF dropdown for manual correction. Choosing a PDF that is already assigned elsewhere swaps the two assignments so the mapping stays one-to-one.
+- Nothing is reordered until **Apply order** is clicked. The Final binder order remains editable afterward with drag-and-drop, arrows, or direct position entry.
+- The assistant currently requires exactly one sequential numbered index row per loaded content PDF. Atypical indexes should continue to use Manual mapping for links and manual content ordering.
+
+This feature changes only content order. It does not alter the index artwork, the supplied tab PDFs, or the source content PDFs.
+
+## v0.13.1 index-number detection fix
+
+Automatic index parsing now infers the actual number-column alignment before accepting numeric row markers. This prevents numeric text at the beginning of a Description, such as `504 Plan`, from being misidentified as an extra index row.
+
+
+## v0.13.1 — Sync Binder to New Index
 
 This release adds a fifth top-level workflow, **Sync to New Index**, for updating an existing tabbed binder from a newly revised index and a set of new PDFs. The new index is treated as the intended final order; the old binder supplies existing content; newly supplied PDFs fill rows that do not align to old content.
 
