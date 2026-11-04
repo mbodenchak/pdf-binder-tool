@@ -194,7 +194,7 @@
                 <h2>Index &amp; links</h2>
                 <p>Add the finished index PDF that should appear at the front of the binder. The app makes its first page the initial top-level bookmark named INDEX, then looks for numbered rows and makes the Description cell clickable. For atypical indexes, use Manual mapping to draw or reassign link regions without changing the index artwork.</p>
               </div>
-              <div class="index-heading-actions"><button id="manual-build-index" type="button" disabled>Manual mapping</button><span id="index-detection-summary" class="index-detection-summary">No index PDF loaded.</span></div>
+              <div class="index-heading-actions"><button id="match-build-index" type="button" disabled>Match PDFs to index</button><button id="manual-build-index" type="button" disabled>Manual mapping</button><span id="index-detection-summary" class="index-detection-summary">No index PDF loaded.</span></div>
             </div>
             <div class="table-wrap">
               <table class="index-table">
@@ -542,6 +542,41 @@
     </div>
 
 
+
+    <dialog id="build-match-dialog" class="build-match-dialog">
+      <div class="build-match-shell">
+        <div class="build-match-heading">
+          <div>
+            <p class="eyebrow">BUILD ASSIST</p>
+            <h2>Match content PDFs to index</h2>
+            <p>The index defines the proposed final order. The app compares each index Description/Date against the loaded PDF filenames and descriptions, then proposes a one-to-one mapping. Review uncertain rows before applying; nothing is reordered until you click Apply order.</p>
+          </div>
+          <button id="close-build-match" class="dialog-close" type="button" aria-label="Close">×</button>
+        </div>
+        <div class="build-match-toolbar">
+          <button id="rerun-build-match" type="button">Re-run matching</button>
+          <span id="build-match-summary" class="status">Load an index and matching content PDFs to begin.</span>
+        </div>
+        <div class="table-wrap build-match-table-wrap">
+          <table class="build-match-table">
+            <thead>
+              <tr>
+                <th>Index position</th>
+                <th>Index entry</th>
+                <th>Date</th>
+                <th>Proposed content PDF</th>
+                <th>Confidence</th>
+              </tr>
+            </thead>
+            <tbody id="build-match-body"><tr><td colspan="5" class="empty-cell">No proposal generated.</td></tr></tbody>
+          </table>
+        </div>
+        <div class="build-match-footer">
+          <span>Applying changes only the order of the loaded content PDFs. Index artwork, tabs, and files are not modified.</span>
+          <div><button id="cancel-build-match" type="button">Cancel</button><button id="apply-build-match" class="primary" type="button" disabled>Apply order</button></div>
+        </div>
+      </div>
+    </dialog>
 
     <dialog id="manual-index-dialog" class="manual-index-dialog">
       <div class="manual-index-shell">
