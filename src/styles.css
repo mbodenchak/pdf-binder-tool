@@ -367,3 +367,42 @@ td input { width: 100%; min-width: 130px; border: 1px solid #ccd4df; border-radi
 @media (max-width: 900px) {
   .sync-source-select { min-width: 250px; }
 }
+
+/* Build Binder: optional index-to-content matching assistant */
+.build-match-dialog {
+  width: min(1180px, calc(100vw - 34px));
+  max-width: 1180px;
+  max-height: calc(100vh - 34px);
+  padding: 0;
+  border: 0;
+  border-radius: 12px;
+  box-shadow: 0 18px 60px rgba(17,24,39,.28);
+}
+.build-match-dialog::backdrop { background: rgba(17,24,39,.50); }
+.build-match-shell { display: flex; flex-direction: column; max-height: calc(100vh - 34px); background: #fff; }
+.build-match-heading { display: flex; justify-content: space-between; gap: 22px; align-items: flex-start; padding: 18px 20px 14px; border-bottom: 1px solid #e4e8ee; }
+.build-match-heading h2 { margin: 0; font-size: 1.2rem; }
+.build-match-heading p:not(.eyebrow) { max-width: 900px; margin: 7px 0 0; color: #687385; font-size: .84rem; line-height: 1.45; }
+.build-match-toolbar { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid #e4e8ee; background: #fafbfd; }
+.build-match-toolbar .status { margin-left: 4px; }
+.build-match-table-wrap { flex: 1 1 auto; min-height: 0; overflow: auto; margin: 0; }
+.build-match-table { width: 100%; border-collapse: collapse; }
+.build-match-table th, .build-match-table td { padding: 8px 9px; border-bottom: 1px solid #e8ebef; vertical-align: top; font-size: .78rem; }
+.build-match-table th { position: sticky; top: 0; z-index: 2; background: #f6f8fa; color: #526071; text-align: left; }
+.build-match-table td:nth-child(1) { width: 105px; text-align: center; }
+.build-match-table td:nth-child(2) { min-width: 320px; }
+.build-match-table td:nth-child(3) { min-width: 105px; }
+.build-match-table td:nth-child(4) { min-width: 390px; }
+.build-match-source-select { width: 100%; min-width: 340px; border: 1px solid #ccd4df; border-radius: 7px; padding: 7px 8px; background: #fff; color: #1d2736; font: inherit; }
+.build-match-footer { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 12px 16px 15px; border-top: 1px solid #e4e8ee; color: #667283; font-size: .8rem; }
+.build-match-footer > div { display: flex; gap: 8px; }
+.build-match-footer button { border: 1px solid #c7d0dc; background: #fff; border-radius: 8px; padding: 9px 13px; font-weight: 700; }
+.build-match-footer .primary { background: #1f5f88; color: #fff; border-color: #1f5f88; }
+@media (max-width: 760px) {
+  .build-match-dialog { width: calc(100vw - 16px); max-height: calc(100vh - 16px); }
+  .build-match-shell { max-height: calc(100vh - 18px); }
+  .build-match-heading { padding: 15px; }
+  .build-match-toolbar { flex-wrap: wrap; }
+  .build-match-source-select { min-width: 250px; }
+  .build-match-footer { align-items: flex-start; flex-direction: column; }
+}
