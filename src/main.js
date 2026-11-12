@@ -145,6 +145,27 @@ const els = {
   syncApproveOmissions: document.querySelector('#sync-approve-omissions'),
   syncOmissionsList: document.querySelector('#sync-omissions-list'),
 
+  volumesMode: document.querySelector('#volumes-mode'),
+  volumesBinder: document.querySelector('#volumes-binder'),
+  volumesSplitAfter: document.querySelector('#volumes-split-after'),
+  volumesIndex1: document.querySelector('#volumes-index-1'),
+  volumesIndex2: document.querySelector('#volumes-index-2'),
+  clearVolumesIndex1: document.querySelector('#clear-volumes-index-1'),
+  clearVolumesIndex2: document.querySelector('#clear-volumes-index-2'),
+  volumesCreateBookmarks: document.querySelector('#volumes-create-bookmarks'),
+  volumesPreserveFrontMatter: document.querySelector('#volumes-preserve-front-matter'),
+  volumesDownload: document.querySelector('#volumes-download'),
+  volumesStatus: document.querySelector('#volumes-status'),
+  volumesAnalysisSummary: document.querySelector('#volumes-analysis-summary'),
+  volumesStructureNote: document.querySelector('#volumes-structure-note'),
+  volume1Range: document.querySelector('#volume-1-range'),
+  volume2Range: document.querySelector('#volume-2-range'),
+  volume1Name: document.querySelector('#volume-1-name'),
+  volume2Name: document.querySelector('#volume-2-name'),
+  volume1IndexStatus: document.querySelector('#volume-1-index-status'),
+  volume2IndexStatus: document.querySelector('#volume-2-index-status'),
+  volumesBody: document.querySelector('#volumes-body'),
+
   manualIndexDialog: document.querySelector('#manual-index-dialog'),
   closeManualIndex: document.querySelector('#close-manual-index'),
   cancelManualIndex: document.querySelector('#cancel-manual-index'),
@@ -242,6 +263,25 @@ const syncState = {
   error: null,
 };
 
+const volumesState = {
+  file: null,
+  bytes: null,
+  pageCount: 0,
+  frontMatterPageIndexes: [],
+  sourceTabs: [],
+  sourceSections: [],
+  indexRows: [],
+  splitAfter: 1,
+  index1File: null,
+  index1Info: null,
+  index1Loading: false,
+  index2File: null,
+  index2Info: null,
+  index2Loading: false,
+  analyzing: false,
+  error: null,
+};
+
 const manualIndexState = {
   mode: null,
   sourceKey: '',
@@ -268,6 +308,7 @@ els.modeTabs.forEach((tab) => {
     els.insertMode.classList.toggle('active', mode === 'insert');
     els.reorderMode.classList.toggle('active', mode === 'reorder');
     els.syncMode.classList.toggle('active', mode === 'sync');
+    els.volumesMode.classList.toggle('active', mode === 'volumes');
   });
 });
 
@@ -475,6 +516,37 @@ els.syncApproveOmissions.addEventListener('change', () => {
 });
 els.syncCreateBookmarks.addEventListener('change', renderSyncWorkspace);
 els.syncDownload.addEventListener('click', buildSyncedBinder);
+
+els.volumesBinder.addEventListener('change', async (event) => {
+  const [file] = event.target.files;
+  if (file) await loadVolumesBinder(file);
+  event.target.value = '';
+});
+els.volumesSplitAfter.addEventListener('change', () => {
+  const max = Math.max(1, volumesState.sourceTabs.length - 1);
+  const requested = Number.parseInt(els.volumesSplitAfter.value, 10);
+  volumesState.splitAfter = Math.min(max, Math.max(1, Number.isFinite(requested) ? requested : 1));
+  renderVolumesWorkspace();
+});
+els.volumesIndex1.addEventListener('change', async (event) => {
+  const [file] = event.target.files;
+  if (file) await loadVolumeIndex(1, file);
+  event.target.value = '';
+});
+els.volumesIndex2.addEventListener('change', async (event) => {
+  const [file] = event.target.files;
+  if (file) await loadVolumeIndex(2, file);
+  event.target.value = '';
+});
+els.clearVolumesIndex1.addEventListener('click', () => {
+  volumesState.index1File = null; volumesState.index1Info = null; volumesState.index1Loading = false; renderVolumesWorkspace();
+});
+els.clearVolumesIndex2.addEventListener('click', () => {
+  volumesState.index2File = null; volumesState.index2Info = null; volumesState.index2Loading = false; renderVolumesWorkspace();
+});
+els.volumesCreateBookmarks.addEventListener('change', renderVolumesWorkspace);
+els.volumesPreserveFrontMatter.addEventListener('change', renderVolumesWorkspace);
+els.volumesDownload.addEventListener('click', buildVolumes);
 
 
 
@@ -5648,6 +5720,380 @@ async function buildReorderedBinder() {
   } finally {
     const currentValidation = validateReorderPlan();
     els.reorderDownload.disabled = !currentValidation.ok;
+  }
+}
+
+
+// ---------------------------------------------------------------------------
+// Split Binder into Volumes workflow (v0.15.0)
+// ---------------------------------------------------------------------------
+
+function setVolumesStatus(message, type = '') {
+  els.volumesStatus.textContent = message;
+  els.volumesStatus.className = `status ${type}`.trim();
+}
+
+async function loadVolumesBinder(file) {
+  if (!isPdfFile(file)) {
+    setVolumesStatus('The completed binder must be a PDF file.', 'error');
+    return;
+  }
+
+  Object.assign(volumesState, {
+    file,
+    bytes: null,
+    pageCount: 0,
+    frontMatterPageIndexes: [],
+    sourceTabs: [],
+    sourceSections: [],
+    indexRows: [],
+    splitAfter: 1,
+    index1File: null,
+    index1Info: null,
+    index1Loading: false,
+    index2File: null,
+    index2Info: null,
+    index2Loading: false,
+    analyzing: true,
+    error: null,
+  });
+  renderVolumesWorkspace();
+  setVolumesStatus(`Analyzing ${file.name} for positional TAB pages…`);
+
+  let loadingTask = null;
+  try {
+    volumesState.bytes = new Uint8Array(await file.arrayBuffer());
+    loadingTask = pdfjsLib.getDocument({ data: volumesState.bytes.slice() });
+    const pdf = await loadingTask.promise;
+    volumesState.pageCount = pdf.numPages;
+    const pattern = /\bTAB\s*(?:NO\.?\s*)?[:#\-–—]?\s*([A-Z]|\d{1,3})\b/i;
+    const tabs = [];
+
+    for (let pageIndex = 0; pageIndex < pdf.numPages; pageIndex += 1) {
+      setVolumesStatus(`Analyzing page ${pageIndex + 1} of ${pdf.numPages}…`);
+      const page = await pdf.getPage(pageIndex + 1);
+      const content = await page.getTextContent();
+      const text = content.items.map((item) => item.str).join(' ').replace(/\s+/g, ' ').trim();
+      const match = text.slice(0, 1800).match(pattern);
+      if (match) {
+        const token = String(match[1]).toUpperCase();
+        tabs.push({
+          pageIndex,
+          label: `TAB ${token}`,
+          detectedNumber: /^\d+$/.test(token) ? Number(token) : null,
+        });
+      }
+    }
+
+    if (tabs.length < 2) throw new Error('At least two TAB divider pages are required to split a binder into two volumes.');
+    tabs.sort((a, b) => a.pageIndex - b.pageIndex);
+    volumesState.sourceTabs = tabs.map((tab, index) => ({ ...tab, position: index + 1 }));
+    volumesState.frontMatterPageIndexes = Array.from({ length: tabs[0].pageIndex }, (_, index) => index);
+    volumesState.sourceSections = tabs.map((tab, index) => {
+      const nextTab = tabs[index + 1];
+      const startPageIndex = tab.pageIndex + 1;
+      const endPageIndex = nextTab ? nextTab.pageIndex - 1 : pdf.numPages - 1;
+      return {
+        originalPosition: index + 1,
+        tabPageIndex: tab.pageIndex,
+        tabLabel: tab.label,
+        pageIndexes: endPageIndex >= startPageIndex
+          ? Array.from({ length: endPageIndex - startPageIndex + 1 }, (_, offset) => startPageIndex + offset)
+          : [],
+      };
+    });
+
+    const rows = [];
+    for (const pageIndex of volumesState.frontMatterPageIndexes) {
+      const page = await pdf.getPage(pageIndex + 1);
+      const pageRows = await detectIndexRowsOnPage(page, pageIndex);
+      rows.push(...pageRows);
+    }
+    rows.sort((a, b) => a.number - b.number || a.pageIndex - b.pageIndex || b.rect[3] - a.rect[3]);
+    volumesState.indexRows = rows;
+    volumesState.splitAfter = Math.max(1, Math.min(tabs.length - 1, Math.ceil(tabs.length / 2)));
+  } catch (error) {
+    console.error(error);
+    volumesState.error = friendlyError(error);
+    setVolumesStatus(`Could not analyze the binder: ${friendlyError(error)}`, 'error');
+  } finally {
+    if (loadingTask) {
+      try { await loadingTask.destroy(); } catch (cleanupError) { console.warn('Could not fully release volume-analysis PDF.js resources.', cleanupError); }
+    }
+    volumesState.analyzing = false;
+    renderVolumesWorkspace();
+  }
+}
+
+async function loadVolumeIndex(volumeNumber, file) {
+  if (!isPdfFile(file)) {
+    setVolumesStatus(`Volume ${volumeNumber} index must be a PDF file.`, 'error');
+    return;
+  }
+  const fileKey = volumeNumber === 1 ? 'index1File' : 'index2File';
+  const infoKey = volumeNumber === 1 ? 'index1Info' : 'index2Info';
+  const loadingKey = volumeNumber === 1 ? 'index1Loading' : 'index2Loading';
+  volumesState[fileKey] = file;
+  volumesState[infoKey] = null;
+  volumesState[loadingKey] = true;
+  renderVolumesWorkspace();
+  setVolumesStatus(`Analyzing Volume ${volumeNumber} index ${file.name}…`);
+  let loadingTask = null;
+  try {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    loadingTask = pdfjsLib.getDocument({ data: bytes });
+    const pdf = await loadingTask.promise;
+    const rows = [];
+    let existingLinkRectsUsed = 0;
+    for (let pageIndex = 0; pageIndex < pdf.numPages; pageIndex += 1) {
+      const page = await pdf.getPage(pageIndex + 1);
+      const pageRows = await detectIndexRowsOnPage(page, pageIndex);
+      existingLinkRectsUsed += pageRows.filter((row) => row.rectSource === 'existing-link').length;
+      rows.push(...pageRows);
+    }
+    rows.sort((a, b) => a.number - b.number || a.pageIndex - b.pageIndex || b.rect[3] - a.rect[3]);
+    volumesState[infoKey] = { pageCount: pdf.numPages, rows, existingLinkRectsUsed };
+  } catch (error) {
+    console.error(error);
+    volumesState[infoKey] = { pageCount: 0, rows: [], existingLinkRectsUsed: 0, error: friendlyError(error) };
+  } finally {
+    if (loadingTask) {
+      try { await loadingTask.destroy(); } catch (cleanupError) { console.warn('Could not fully release volume-index PDF.js resources.', cleanupError); }
+    }
+    volumesState[loadingKey] = false;
+    renderVolumesWorkspace();
+  }
+}
+
+function getOldVolumeIndexPageIndexes() {
+  return [...new Set((volumesState.indexRows || []).map((row) => row.pageIndex))].sort((a, b) => a - b);
+}
+
+function getVolumeRange(volumeNumber) {
+  const total = volumesState.sourceTabs.length;
+  const split = volumesState.splitAfter;
+  return volumeNumber === 1 ? { start: 1, end: split } : { start: split + 1, end: total };
+}
+
+function getVolumeIndexMapping(volumeNumber) {
+  const info = volumeNumber === 1 ? volumesState.index1Info : volumesState.index2Info;
+  const file = volumeNumber === 1 ? volumesState.index1File : volumesState.index2File;
+  if (!file) return { ok: true, mode: 'none', links: [], reason: '' };
+  if (!info || info.error) return { ok: false, mode: 'error', links: [], reason: info?.error || 'Index analysis is incomplete.' };
+  const { start, end } = getVolumeRange(volumeNumber);
+  const count = Math.max(0, end - start + 1);
+  const rows = info.rows || [];
+  const counts = new Map();
+  rows.forEach((row) => counts.set(row.number, (counts.get(row.number) || 0) + 1));
+  if ([...counts.values()].some((value) => value !== 1)) return { ok: false, mode: 'duplicate', links: [], reason: 'Duplicate index row numbers were detected.' };
+  if (rows.length !== count) return { ok: false, mode: 'count', links: [], reason: `${rows.length} numbered row${rows.length === 1 ? '' : 's'} were detected for ${count} tabs in Volume ${volumeNumber}.` };
+
+  const originals = Array.from({ length: count }, (_, i) => start + i);
+  const locals = Array.from({ length: count }, (_, i) => i + 1);
+  const numbers = rows.map((row) => row.number).sort((a, b) => a - b);
+  const same = (a, b) => a.length === b.length && a.every((value, index) => value === b[index]);
+  let mode = '';
+  if (same(numbers, originals)) mode = 'original';
+  else if (same(numbers, locals)) mode = 'local';
+  else return { ok: false, mode: 'sequence', links: [], reason: `Rows must be numbered either ${start}–${end} or 1–${count}.` };
+
+  const links = rows.map((row) => ({
+    ...row,
+    originalPosition: mode === 'original' ? row.number : start + row.number - 1,
+  }));
+  return { ok: true, mode, links, reason: '' };
+}
+
+function validateVolumesPlan() {
+  const errors = [];
+  const warnings = [];
+  const total = volumesState.sourceTabs.length;
+  if (!volumesState.file) errors.push('Open a completed binder.');
+  if (volumesState.analyzing) errors.push('Binder analysis is still running.');
+  if (volumesState.error) errors.push(volumesState.error);
+  if (volumesState.file && !volumesState.analyzing && total < 2) errors.push('At least two positional tabs are required.');
+  if (total >= 2 && (volumesState.splitAfter < 1 || volumesState.splitAfter >= total)) errors.push(`Choose a split point between TAB 1 and TAB ${total - 1}.`);
+  if (volumesState.index1Loading || volumesState.index2Loading) errors.push('Index analysis is still running.');
+  [1, 2].forEach((volumeNumber) => {
+    const mapping = getVolumeIndexMapping(volumeNumber);
+    if (!mapping.ok) errors.push(`Volume ${volumeNumber} index: ${mapping.reason}`);
+  });
+  const mismatches = volumesState.sourceTabs.filter((tab) => tab.detectedNumber != null && tab.detectedNumber !== tab.position);
+  if (mismatches.length) warnings.push(`${mismatches.length} printed TAB label${mismatches.length === 1 ? '' : 's'} do not match positional order; physical tabs will still be preserved exactly.`);
+  if (!volumesState.index1File || !volumesState.index2File) warnings.push('A volume without a supplied index will begin with its TAB pages (plus preserved non-index front matter in Volume 1, if enabled).');
+  return { ok: errors.length === 0, errors, warnings };
+}
+
+function renderVolumesWorkspace() {
+  const total = volumesState.sourceTabs.length;
+  els.volumesSplitAfter.disabled = volumesState.analyzing || total < 2;
+  if (total >= 2) {
+    els.volumesSplitAfter.min = '1';
+    els.volumesSplitAfter.max = String(total - 1);
+    els.volumesSplitAfter.value = String(volumesState.splitAfter);
+  }
+  els.clearVolumesIndex1.disabled = !volumesState.index1File;
+  els.clearVolumesIndex2.disabled = !volumesState.index2File;
+
+  if (!volumesState.file) {
+    els.volumesAnalysisSummary.textContent = 'No binder loaded.';
+    els.volumesStructureNote.textContent = 'Load a binder to detect its tab positions.';
+    els.volume1Range.textContent = '—';
+    els.volume2Range.textContent = '—';
+    els.volumesBody.innerHTML = '<tr><td colspan="5" class="empty-cell">Open a binder to inspect its structure.</td></tr>';
+    els.volumesDownload.disabled = true;
+    return;
+  }
+
+  if (volumesState.analyzing) {
+    els.volumesAnalysisSummary.textContent = 'Analyzing binder…';
+  } else if (volumesState.error) {
+    els.volumesAnalysisSummary.textContent = 'Analysis failed.';
+  } else {
+    els.volumesAnalysisSummary.textContent = `${total} positional tab${total === 1 ? '' : 's'} detected across ${volumesState.pageCount} pages.`;
+  }
+
+  if (total >= 2) {
+    const v1 = getVolumeRange(1);
+    const v2 = getVolumeRange(2);
+    els.volume1Range.textContent = `TAB ${v1.start} through TAB ${v1.end} (${v1.end - v1.start + 1} positions)`;
+    els.volume2Range.textContent = `TAB ${v2.start} through TAB ${v2.end} (${v2.end - v2.start + 1} positions)`;
+    const oldIndexPages = getOldVolumeIndexPageIndexes();
+    const preserved = els.volumesPreserveFrontMatter.checked
+      ? Math.max(0, volumesState.frontMatterPageIndexes.length - oldIndexPages.length)
+      : 0;
+    els.volumesStructureNote.textContent = `Split after positional TAB ${volumesState.splitAfter}. Original printed TAB pages are preserved. ${oldIndexPages.length ? `${oldIndexPages.length} detected old index page${oldIndexPages.length === 1 ? '' : 's'} will be omitted.` : 'No old index pages were detected.'} ${preserved ? `${preserved} other front-matter page${preserved === 1 ? '' : 's'} will stay in Volume 1.` : ''}`;
+  }
+
+  const renderIndexStatus = (volumeNumber, element) => {
+    const file = volumeNumber === 1 ? volumesState.index1File : volumesState.index2File;
+    const loading = volumeNumber === 1 ? volumesState.index1Loading : volumesState.index2Loading;
+    const info = volumeNumber === 1 ? volumesState.index1Info : volumesState.index2Info;
+    element.className = 'volume-index-status';
+    if (!file) { element.textContent = 'No replacement index supplied.'; return; }
+    if (loading) { element.textContent = `Analyzing ${file.name}…`; return; }
+    const mapping = getVolumeIndexMapping(volumeNumber);
+    if (!mapping.ok) { element.textContent = `⚠ ${mapping.reason}`; element.classList.add('warn'); return; }
+    const modeText = mapping.mode === 'original' ? 'original tab numbering' : 'volume-local numbering';
+    element.textContent = `✓ ${file.name}: ${mapping.links.length} entries matched using ${modeText}.`;
+    element.classList.add('ok');
+  };
+  renderIndexStatus(1, els.volume1IndexStatus);
+  renderIndexStatus(2, els.volume2IndexStatus);
+
+  els.volumesBody.innerHTML = '';
+  volumesState.sourceSections.forEach((section, index) => {
+    const position = index + 1;
+    const row = document.createElement('tr');
+    if (position === volumesState.splitAfter + 1) row.classList.add('volume-row-split');
+    const description = (volumesState.indexRows || []).find((item) => item.number === position)?.description || `Existing ${section.tabLabel} content`;
+    const first = section.pageIndexes.length ? section.pageIndexes[0] + 1 : '—';
+    const last = section.pageIndexes.length ? section.pageIndexes.at(-1) + 1 : '—';
+    row.innerHTML = `<td>${position}</td><td>${escapeHtml(volumesState.sourceTabs[index]?.label || `TAB ${position}`)}</td><td>${escapeHtml(description)}</td><td>${first === last ? first : `${first}–${last}`}</td><td>Volume ${position <= volumesState.splitAfter ? 1 : 2}</td>`;
+    els.volumesBody.append(row);
+  });
+
+  const validation = validateVolumesPlan();
+  els.volumesDownload.disabled = !validation.ok;
+  if (!volumesState.analyzing && !volumesState.error) {
+    if (validation.errors.length) setVolumesStatus(validation.errors[0], 'error');
+    else if (validation.warnings.length) setVolumesStatus(validation.warnings[0], 'warning');
+    else setVolumesStatus(`Ready to build two volumes after TAB ${volumesState.splitAfter}.`, 'success');
+  }
+}
+
+async function buildSingleVolume(source, volumeNumber) {
+  const output = await createOutputPdfDocument();
+  const { start, end } = getVolumeRange(volumeNumber);
+  const indexFile = volumeNumber === 1 ? volumesState.index1File : volumesState.index2File;
+  const indexMapping = getVolumeIndexMapping(volumeNumber);
+  const bookmarks = [];
+  const contentTargets = new Map();
+  let indexStart = null;
+  let indexPageCount = 0;
+
+  if (volumeNumber === 1 && els.volumesPreserveFrontMatter.checked) {
+    const oldIndexSet = new Set(getOldVolumeIndexPageIndexes());
+    let insertedIndex = false;
+    for (const pageIndex of volumesState.frontMatterPageIndexes) {
+      if (oldIndexSet.has(pageIndex)) {
+        if (indexFile && !insertedIndex) {
+          indexStart = output.getPageCount();
+          const result = await appendIndexPdfToOutput(output, indexFile);
+          indexPageCount = result.pageCount;
+          insertedIndex = true;
+        }
+        continue;
+      }
+      await appendSourcePageIndexes(output, source, [pageIndex]);
+    }
+    if (indexFile && !insertedIndex) {
+      indexStart = output.getPageCount();
+      const result = await appendIndexPdfToOutput(output, indexFile);
+      indexPageCount = result.pageCount;
+    }
+  } else if (indexFile) {
+    indexStart = output.getPageCount();
+    const result = await appendIndexPdfToOutput(output, indexFile);
+    indexPageCount = result.pageCount;
+  }
+
+  if (els.volumesCreateBookmarks.checked && indexFile && indexStart != null) bookmarks.push({ title: 'INDEX', pageIndex: indexStart });
+
+  for (let position = start; position <= end; position += 1) {
+    const idx = position - 1;
+    const tab = volumesState.sourceTabs[idx];
+    const section = volumesState.sourceSections[idx];
+    const tabOutputIndex = output.getPageCount();
+    await appendSourcePageIndexes(output, source, [tab.pageIndex]);
+    if (els.volumesCreateBookmarks.checked) bookmarks.push({ title: tab.label || `TAB ${position}`, pageIndex: tabOutputIndex });
+    const contentOutputIndex = output.getPageCount();
+    contentTargets.set(position, contentOutputIndex);
+    await appendSourcePageIndexes(output, source, section.pageIndexes);
+  }
+
+  let linked = 0;
+  if (indexFile && indexStart != null && indexMapping.ok) {
+    indexMapping.links.forEach((row) => {
+      const pageIndex = indexStart + row.pageIndex;
+      const target = contentTargets.get(row.originalPosition);
+      if (target == null) throw new Error(`Could not resolve Volume ${volumeNumber} index row ${row.number} to a content page.`);
+      addInternalLinkAnnotation(output, output.getPage(pageIndex), row.rect, target);
+      linked += 1;
+    });
+  }
+  if (bookmarks.length) addTopLevelBookmarks(output, bookmarks);
+  const bytes = await output.save();
+  return { bytes, linked, indexPageCount, start, end };
+}
+
+async function buildVolumes() {
+  const validation = validateVolumesPlan();
+  if (!validation.ok) { renderVolumesWorkspace(); return; }
+  els.volumesDownload.disabled = true;
+  try {
+    setVolumesStatus('Loading source binder for volume assembly…');
+    const source = await PDFDocument.load(volumesState.bytes.slice(), { updateMetadata: false });
+    setVolumesStatus('Building Volume 1…');
+    const vol1 = await buildSingleVolume(source, 1);
+    setVolumesStatus('Building Volume 2…');
+    const vol2 = await buildSingleVolume(source, 2);
+
+    const name1 = sanitizePdfFilename(els.volume1Name.value || 'Binder - Volume 1.pdf');
+    const name2 = sanitizePdfFilename(els.volume2Name.value || 'Binder - Volume 2.pdf');
+    if (name1.toLowerCase() === name2.toLowerCase()) throw new Error('Volume 1 and Volume 2 output filenames must be different.');
+    const zip = new JSZip();
+    zip.file(name1, vol1.bytes);
+    zip.file(name2, vol2.bytes);
+    const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' });
+    const base = sanitizePdfFilename(stripExtension(volumesState.file.name) || 'Binder').replace(/\.pdf$/i, '');
+    downloadBlob(blob, `${base} - Volumes.zip`);
+    setVolumesStatus(`Built ${name1} (TAB ${vol1.start}–${vol1.end}${vol1.linked ? `, ${vol1.linked} index links` : ''}) and ${name2} (TAB ${vol2.start}–${vol2.end}${vol2.linked ? `, ${vol2.linked} index links` : ''}).`, 'success');
+  } catch (error) {
+    console.error(error);
+    setVolumesStatus(`Could not build volumes: ${friendlyError(error)}`, 'error');
+  } finally {
+    els.volumesDownload.disabled = !validateVolumesPlan().ok;
   }
 }
 

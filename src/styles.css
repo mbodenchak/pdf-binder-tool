@@ -406,3 +406,18 @@ td input { width: 100%; min-width: 130px; border: 1px solid #ccd4df; border-radi
   .build-match-source-select { min-width: 250px; }
   .build-match-footer { align-items: flex-start; flex-direction: column; }
 }
+
+/* Split into Volumes (v0.15.0) */
+.volumes-toolbar { display: flex; flex-wrap: wrap; gap: .65rem; align-items: center; }
+.volumes-toolbar > label:not(.file-button):not(.inline-check) { display: flex; align-items: center; gap: .4rem; font-weight: 700; }
+.volumes-toolbar input[type="number"] { width: 5.5rem; }
+.volume-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; margin-top: 1rem; }
+.volume-card { border: 1px solid var(--border, #d8dee8); border-radius: 12px; padding: 1rem; background: #fff; }
+.volume-card h3 { margin: 0 0 .35rem; }
+.volume-card p { margin: 0 0 .75rem; font-weight: 700; color: #334155; }
+.volume-card label { display: grid; gap: .35rem; font-size: .85rem; font-weight: 700; }
+.volume-index-status { margin-top: .65rem; color: #64748b; font-size: .84rem; }
+.volume-index-status.ok { color: #166534; }
+.volume-index-status.warn { color: #92400e; }
+.volume-row-split td { border-top: 3px solid #1e293b !important; }
+@media (max-width: 850px) { .volume-grid { grid-template-columns: 1fr; } }

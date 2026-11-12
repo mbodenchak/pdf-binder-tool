@@ -1,4 +1,22 @@
-# PDF Binder Tool — browser-only MVP v0.14.0
+# PDF Binder Tool — browser-only MVP v0.15.0
+
+
+## v0.15.0 — Split a completed binder into two volumes
+
+A sixth top-level **Split into Volumes** workflow can now divide an existing tabbed binder into two finished PDFs without first extracting every document.
+
+- Open a completed binder and choose **Split after TAB N**.
+- Existing physical green tab pages are preserved exactly, so original TAB numbering remains intact in both outputs.
+- The app omits detected old master-index pages by default, since those entries would usually be stale after the binder is divided.
+- Optional non-index front matter can be preserved in Volume 1.
+- Supply an optional separate PDF index for Volume 1 and/or Volume 2. The app analyzes each supplied index, removes stale link annotations, and creates new links to the first content page after the corresponding TAB.
+- A volume index may keep original numbering (for example rows 26–49 in Volume 2) or use volume-local numbering (1–24); the app detects either clean sequential convention.
+- When enabled, each supplied volume index becomes the first bookmark named `INDEX`, followed by the original positional `TAB` bookmarks. All generated destinations use Fit Page.
+- The two completed PDFs are downloaded together in a ZIP.
+
+### OCR note
+
+The tool does **not** OCR source PDFs. PDF.js reads text that already exists in the PDF's text layer for tab/index detection, while pdf-lib copies the original page content when splitting or rebuilding. Image-only scanned pages therefore remain image-only unless they were OCR'd before being opened in this app.
 
 
 ## v0.14.0 — Match loose content PDFs to a supplied index

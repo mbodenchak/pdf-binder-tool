@@ -23,6 +23,7 @@
         <button class="mode-tab" data-mode="insert">Insert Documents</button>
         <button class="mode-tab" data-mode="reorder">Reorder Binder</button>
         <button class="mode-tab" data-mode="sync">Sync to New Index</button>
+        <button class="mode-tab" data-mode="volumes">Split into Volumes</button>
       </nav>
 
       <main>
@@ -538,8 +539,78 @@
           </section>
         </section>
 
+        <section id="volumes-mode" class="mode-panel">
+          <div class="toolbar card volumes-toolbar">
+            <label class="file-button">
+              Open completed binder
+              <input id="volumes-binder" type="file" accept="application/pdf,.pdf" hidden />
+            </label>
+            <label>Split after TAB
+              <input id="volumes-split-after" type="number" min="1" step="1" value="1" disabled />
+            </label>
+            <label class="file-button">
+              Volume 1 index (optional)
+              <input id="volumes-index-1" type="file" accept="application/pdf,.pdf" hidden />
+            </label>
+            <button id="clear-volumes-index-1" disabled>Clear V1 index</button>
+            <label class="file-button">
+              Volume 2 index (optional)
+              <input id="volumes-index-2" type="file" accept="application/pdf,.pdf" hidden />
+            </label>
+            <button id="clear-volumes-index-2" disabled>Clear V2 index</button>
+            <label class="inline-check">
+              <input id="volumes-create-bookmarks" type="checkbox" checked />
+              Create INDEX/TAB bookmarks
+            </label>
+            <label class="inline-check">
+              <input id="volumes-preserve-front-matter" type="checkbox" checked />
+              Keep non-index front matter in Volume 1
+            </label>
+            <button id="volumes-download" class="primary" disabled>Build & download volumes</button>
+            <span id="volumes-status" class="status">Open a completed tabbed binder to begin.</span>
+          </div>
+
+          <section class="card volumes-summary-panel">
+            <div class="index-panel-heading">
+              <div>
+                <h2>Volume plan</h2>
+                <p>The existing green tab pages are preserved, so tab numbering remains original. The app omits the old detected index pages and can insert a separate updated index for each volume.</p>
+              </div>
+              <span id="volumes-analysis-summary" class="index-detection-summary">No binder loaded.</span>
+            </div>
+            <div id="volumes-structure-note" class="insert-structure-note">Load a binder to detect its tab positions.</div>
+            <div class="volume-grid">
+              <div class="volume-card">
+                <h3>Volume 1</h3>
+                <p id="volume-1-range">—</p>
+                <label>Output filename <input id="volume-1-name" type="text" value="Binder - Volume 1.pdf" /></label>
+                <div id="volume-1-index-status" class="volume-index-status">No replacement index supplied.</div>
+              </div>
+              <div class="volume-card">
+                <h3>Volume 2</h3>
+                <p id="volume-2-range">—</p>
+                <label>Output filename <input id="volume-2-name" type="text" value="Binder - Volume 2.pdf" /></label>
+                <div id="volume-2-index-status" class="volume-index-status">No replacement index supplied.</div>
+              </div>
+            </div>
+          </section>
+
+          <section class="card volumes-preview-panel">
+            <div class="index-panel-heading">
+              <div><h2>Detected binder structure</h2><p>Review the positions around the proposed split before generating the two volumes.</p></div>
+            </div>
+            <div class="table-wrap">
+              <table class="reorder-table">
+                <thead><tr><th>Position</th><th>Tab</th><th>Description</th><th>Source pages</th><th>Volume</th></tr></thead>
+                <tbody id="volumes-body"><tr><td colspan="5" class="empty-cell">Open a binder to inspect its structure.</td></tr></tbody>
+              </table>
+            </div>
+          </section>
+        </section>
+
       </main>
     </div>
+
 
 
 
